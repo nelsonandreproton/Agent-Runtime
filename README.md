@@ -59,18 +59,34 @@ flowchart TD
 
 ## Status
 
-A working v1 pipeline is implemented in `agent_runtime/`, scoped to a single agent end to end:
+A working pipeline is implemented in `agent_runtime/`, serving one or more agents from a single gateway process:
 
-- **Markdown Agent Loader** (`loader.py`) — parses agent `.md` files in the exact frontmatter format used by Claude Code / Cowork subagents (`name`, `description`, `tools`, `model` + a Markdown body used as the system prompt). A real example is bundled at `agents/code-reviewer.md`.
+- **Markdown Agent Loader** (`loader.py`) — parses agent `.md` files in the exact frontmatter format used by Claude Code / Cowork subagents (`name`, `description`, `tools`, `model` + a Markdown body used as the system prompt). Real examples are bundled at `agents/code-reviewer.md` and `agents/security-reviewer.md`.
 - **Tool mapping** (`tool_mapping.py`) — maps the Claude Code tool names an agent asks for (`Read`, `Write`, `Edit`, `Glob`, ...) onto whatever MCP servers are configured. `Bash` and a few other tools are hard-blocked from ever being exposed over A2A, regardless of configuration — see "Security notes" below.
 - **MCP Client** (`mcp_client.py`) — connects to one or more MCP servers over stdio (via the official `mcp` Python SDK) and exposes their tools under those Claude Code names.
-- **Agent Runtime** (`runtime.py`) — the tool-calling loop: builds the message list from the agent's system prompt, calls the LLM, executes any tool calls via MCP, feeds results back, repeats (capped at 8 iterations).
+- **Agent Runtime** (`runtime.py`) — the tool-calling loop: builds the message list from the agent's system prompt, calls the LLM, executes any tool calls via MCP, feeds results back, repeats (capped at 8 iterations). It's agent-agnostic per call, so one runtime instance (and one shared MCP connection pool) serves every agent.
 - **llama-server client** (`llm_client.py`) — talks to llama.cpp's `llama-server` over its OpenAI-compatible `/v1/chat/completions` endpoint, including `tools`/`tool_calls`.
-- **A2A Gateway** (`a2a_gateway.py`) — built on the official `a2a-sdk` (0.3.x). Publishes an Agent Card at `/.well-known/agent-card.json` and a JSON-RPC endpoint (`message/send`, `tasks/get`, ...) that runs the loaded agent per request.
+- **A2A Gateway** (`a2a_gateway.py`) — built on the official `a2a-sdk` (0.3.x). Every agent found in `agents/` gets its own Agent Card and JSON-RPC endpoint, mounted under `/agents/<name>/...` on a single FastAPI app/port (see "Multiple agents, one gateway" below). A `GET /agents` index lists what's mounted.
 
-This has been validated with a real HTTP round trip: A2A `message/send` request → gateway → runtime → a genuine MCP filesystem server tool call → LLM → completed A2A `Task` with the result as an artifact. Unit tests cover the loader, tool mapping (including the security block), the runtime's tool-call loop, and the gateway's request/response contract (`tests/`).
+This has been validated with real HTTP round trips against two agents served from the same process: `GET /agents` → per-agent Agent Card → `message/send` → runtime → a genuine MCP filesystem server tool call → LLM → completed A2A `Task`, each agent answering independently. Unit tests cover the loader, tool mapping (including the security block), the runtime's tool-call loop, and the gateway's per-agent routing (`tests/`).
 
-Not yet built (natural next steps once v1 is validated against your real agents and a real model): serving more than one agent from a single gateway process, additional MCP servers (Tavily, Git, SQLite/Postgres, custom Python tools) beyond the filesystem example, and streaming (`message/stream`) responses.
+Not yet built (natural next steps once this is validated against your real agents and a real model): additional MCP servers (Tavily, Git, SQLite/Postgres, custom Python tools) beyond the filesystem example, and streaming (`message/stream`) responses.
+
+## Multiple agents, one gateway
+
+A2A itself has no concept of "many agents behind one URL" — an Agent Card describes exactly one agent at exactly one RPC url, and its `skills` list is for discovery only (there's no field in `message/send` to pick a skill/agent at request time). So this runtime hosts every agent it finds under its own sub-path instead:
+
+```
+http://host:9000/agents/code-reviewer/.well-known/agent-card.json      (Agent Card)
+http://host:9000/agents/code-reviewer/                                  (RPC endpoint)
+http://host:9000/agents/security-reviewer/.well-known/agent-card.json
+http://host:9000/agents/security-reviewer/
+http://host:9000/agents                                                 (index of everything mounted)
+```
+
+One process, one port, one base URL to expose — but each agent stays independently, spec-correctly addressable. From OutSystems ODC's side this means registering one "external agent" connector per markdown agent, pointed at that agent's own Agent Card URL, rather than trying to reach several agents through a single connector.
+
+By default every `.md` file in `agents/` is mounted. Set `AGENT_RUNTIME_AGENT_NAMES` (comma-separated) to expose only a subset.
 
 ## Quickstart
 
@@ -84,19 +100,22 @@ pip install -e ".[dev]"
 # 2. Configure which MCP servers back which Claude Code tools.
 cp config/mcp_servers.example.json config/mcp_servers.json
 cp config/.env.example config/.env
-# edit both: point the filesystem server at the directory this agent may read,
-# and set AGENT_RUNTIME_AGENT_NAME to the agent you want to serve.
+# edit both: point the filesystem server at the directory these agents may read.
+# By default every agent in agents/ is served; set AGENT_RUNTIME_AGENT_NAMES
+# to a comma-separated list to expose only a subset.
 
-# 3. Serve the agent over A2A.
+# 3. Serve every agent in agents/ over A2A.
 ./scripts/run_gateway.sh
 ```
 
 Then, from anywhere that can reach the gateway:
 
 ```bash
-curl http://localhost:9000/.well-known/agent-card.json
+curl http://localhost:9000/agents  # which agents are mounted, and their Agent Card URLs
 
-curl -X POST http://localhost:9000/ -H "Content-Type: application/json" -d '{
+curl http://localhost:9000/agents/code-reviewer/.well-known/agent-card.json
+
+curl -X POST http://localhost:9000/agents/code-reviewer/ -H "Content-Type: application/json" -d '{
   "id": "1", "jsonrpc": "2.0", "method": "message/send",
   "params": {"message": {"kind": "message", "messageId": "m1", "role": "user",
     "parts": [{"kind": "text", "text": "review app.py"}]}}
@@ -120,7 +139,7 @@ model: local
 The agent's system prompt goes here, exactly like a Claude Code subagent.
 ```
 
-Point `AGENT_RUNTIME_AGENT_NAME` at it. If `tools` is omitted, the agent inherits every tool this runtime currently has connected via MCP — the same "inherit all tools" convention Claude Code uses.
+It's picked up automatically the next time the gateway starts (or restrict to specific agents with `AGENT_RUNTIME_AGENT_NAMES`). If `tools` is omitted, the agent inherits every tool this runtime currently has connected via MCP — the same "inherit all tools" convention Claude Code uses.
 
 ## Wiring more MCP servers
 
@@ -141,7 +160,7 @@ If you use `npx -y <package>` to run a server, be aware that in some sandboxed/p
 
 ## Connecting from OutSystems ODC
 
-Point the ODC external agent connector at this gateway's public URL (`AGENT_RUNTIME_PUBLIC_URL`, e.g. `https://your-host:9000/`). ODC should be able to fetch the Agent Card from `/.well-known/agent-card.json` and call `message/send` per the A2A spec. Since this gateway currently declares `streaming: false`, use ODC's non-streaming/synchronous call path. You'll need this gateway reachable from ODC — for Near's own on-prem `llama.cpp` box that most likely means a reverse proxy or tunnel exposing the gateway's port, which is a deployment detail worth nailing down before going further.
+For each markdown agent you want to expose, register a separate ODC external agent connector pointed at that agent's own Agent Card URL — e.g. `https://your-host:9000/agents/code-reviewer/.well-known/agent-card.json` — not at the gateway's bare base URL (`AGENT_RUNTIME_PUBLIC_URL`). ODC should be able to fetch that card and call `message/send` against the matching RPC endpoint per the A2A spec. Since these agents currently declare `streaming: false`, use ODC's non-streaming/synchronous call path. You'll need the gateway reachable from ODC — for Near's own on-prem `llama.cpp` box that most likely means a reverse proxy or tunnel exposing the gateway's port, which is a deployment detail worth nailing down before going further.
 
 ## Security notes
 

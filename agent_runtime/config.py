@@ -40,7 +40,9 @@ def load_mcp_servers(path: Path | None) -> list[MCPServerConfig]:
 @dataclass(frozen=True)
 class Settings:
     agents_dir: Path
-    agent_name: str
+    # Restricts which agents (by frontmatter `name`) get served, out of every
+    # .md file found in agents_dir. None means "serve all of them".
+    agent_names: list[str] | None
     llama_base_url: str
     llama_model: str
     mcp_config_path: Path | None
@@ -54,9 +56,12 @@ class Settings:
         host = os.environ.get("AGENT_RUNTIME_HOST", "0.0.0.0")
         port = int(os.environ.get("AGENT_RUNTIME_PORT", "9000"))
         mcp_config = os.environ.get("AGENT_RUNTIME_MCP_CONFIG")
+        agent_names_raw = os.environ.get("AGENT_RUNTIME_AGENT_NAMES")
         return cls(
             agents_dir=Path(os.environ.get("AGENT_RUNTIME_AGENTS_DIR", "agents")),
-            agent_name=os.environ.get("AGENT_RUNTIME_AGENT_NAME", "code-reviewer"),
+            agent_names=(
+                [n.strip() for n in agent_names_raw.split(",") if n.strip()] if agent_names_raw else None
+            ),
             llama_base_url=os.environ.get("AGENT_RUNTIME_LLAMA_BASE_URL", "http://127.0.0.1:8080"),
             llama_model=os.environ.get("AGENT_RUNTIME_LLAMA_MODEL", "local-model"),
             mcp_config_path=Path(mcp_config) if mcp_config else None,
