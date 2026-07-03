@@ -1,0 +1,17 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "_comment": "Prefer a globally-installed binary over 'npx -y ...': in some sandboxed/proxied environments npx hangs on its own registry check even when the package is cached, while the installed binary starts instantly. Install with: npm install -g @modelcontextprotocol/server-filesystem",
+      "command": "mcp-server-filesystem",
+      "args": ["/path/to/the/project/this/agent/may/read"],
+      "env": {},
+      "tool_aliases": {
+        "Read": "read_text_file",
+        "Write": "write_file",
+        "Edit": "edit_file",
+        "Glob": "search_files"
+      }
+    }
+  ]
+}
