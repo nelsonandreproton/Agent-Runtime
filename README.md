@@ -70,7 +70,9 @@ A working pipeline is implemented in `agent_runtime/`, serving one or more agent
 
 This has been validated with real HTTP round trips against two agents served from the same process: `GET /agents` → per-agent Agent Card → `message/send` → runtime → a genuine MCP filesystem server tool call → LLM → completed A2A `Task`, each agent answering independently. Unit tests cover the loader, tool mapping (including the security block), the runtime's tool-call loop, and the gateway's per-agent routing (`tests/`).
 
-Not yet built (natural next steps once this is validated against your real agents and a real model): additional MCP servers (Tavily, Git, SQLite/Postgres, custom Python tools) beyond the filesystem example, and streaming (`message/stream`) responses.
+It has also been validated end-to-end against a real OutSystems ODC chat agent (via a tunneled gateway): ODC fetched an Agent Card, sent a `message/send` call with a real meeting transcript, the runtime ran it through the local LLM, and the structured summary was rendered back in ODC's chat UI. Two ODC-specific integration issues surfaced and are documented in "Connecting from OutSystems ODC" below (`AGENT_RUNTIME_PUBLIC_URL` reachability, and forcing ODC's `taskId` parameter empty) — both are configuration/deployment gotchas, not bugs in this runtime. Every A2A request/response and tool call is now logged (see `a2a_gateway.py`/`runtime.py`) to make diagnosing future integration issues faster: at the default `INFO` level only sizes, tool names, and outcomes are logged; set `AGENT_RUNTIME_LOG_LEVEL=DEBUG` to additionally log full request/response/tool-call content, which can include sensitive data and should only be used for local debugging.
+
+Not yet built (natural next steps once this is validated against your real agents and a real model): additional MCP servers (Tavily, Git, SQLite/Postgres, custom Python tools) beyond the filesystem example, streaming (`message/stream`) responses, and authentication on the A2A endpoint itself.
 
 ## Multiple agents, one gateway
 
@@ -107,6 +109,8 @@ cp config/.env.example config/.env
 # 3. Serve every agent in agents/ over A2A.
 ./scripts/run_gateway.sh
 ```
+
+On Windows, use the PowerShell equivalents instead: `.\scripts\run_llama_server.ps1` and `.\scripts\run_gateway.ps1`.
 
 Then, from anywhere that can reach the gateway:
 
@@ -161,6 +165,10 @@ If you use `npx -y <package>` to run a server, be aware that in some sandboxed/p
 ## Connecting from OutSystems ODC
 
 For each markdown agent you want to expose, register a separate ODC external agent connector pointed at that agent's own Agent Card URL — e.g. `https://your-host:9000/agents/code-reviewer/.well-known/agent-card.json` — not at the gateway's bare base URL (`AGENT_RUNTIME_PUBLIC_URL`). ODC should be able to fetch that card and call `message/send` against the matching RPC endpoint per the A2A spec. Since these agents currently declare `streaming: false`, use ODC's non-streaming/synchronous call path. You'll need the gateway reachable from ODC — for Near's own on-prem `llama.cpp` box that most likely means a reverse proxy or tunnel exposing the gateway's port, which is a deployment detail worth nailing down before going further.
+
+**`AGENT_RUNTIME_PUBLIC_URL` must be the address ODC (not you) can reach.** Every Agent Card's `url` field — the RPC endpoint ODC actually connects to — is built from `AGENT_RUNTIME_PUBLIC_URL` once at gateway startup; it's never inferred from the request. If this is still `http://localhost:9000/` while the gateway is exposed through ngrok, Cloudflare Tunnel, or a reverse proxy, ODC's "Get Details" (which just fetches the Agent Card) will succeed, but "Test Connection" (which connects to the card's `url`) will fail with a generic connection error — because it's trying to reach ODC's own `localhost`, not your machine. Whenever the public URL changes, update `AGENT_RUNTIME_PUBLIC_URL` in `config/.env` and restart the gateway.
+
+**In ODC's tool/action settings for this agent, force the `taskId` parameter to always send empty.** ODC's own orchestrating LLM will sometimes populate the optional `taskId` parameter on its `message/send` tool call with a self-invented, non-UUID string (observed: it reused the action's own name, e.g. `summarize-meeting-notes`) even on a brand-new conversation turn. The A2A SDK's `DefaultRequestHandler` treats any `taskId` as a reference to an *existing* task and hard-rejects one it doesn't recognize with JSON-RPC error `-32001 Task <id> was specified but does not exist` — there is no server-side setting to relax this, since it's spec-mandated task-continuation behavior, not a bug in this gateway. Symptom in ODC chat: the agent replies "task is currently in progress... check back later" and never surfaces the actual answer, because the call failed before your agent ever ran. Fix on the ODC side: configure the `taskId` parameter to always be sent empty rather than left to the LLM's discretion.
 
 ## Security notes
 

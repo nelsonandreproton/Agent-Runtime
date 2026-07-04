@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 import uvicorn
 
@@ -14,7 +15,16 @@ from .loader import load_all_agents
 from .mcp_client import MCPToolsClient
 from .runtime import AgentRuntime
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# AGENT_RUNTIME_LOG_LEVEL defaults to INFO, which logs request/response sizes
+# and outcomes but never raw content. Set to DEBUG to additionally log full
+# request/response/tool-call bodies (agent input, LLM output, tool arguments
+# and results) — this can include sensitive data (file contents an agent
+# read, CRM records, transcripts) and should only be enabled for local
+# debugging, never left on in a deployment whose logs are captured off-box.
+logging.basicConfig(
+    level=os.environ.get("AGENT_RUNTIME_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 

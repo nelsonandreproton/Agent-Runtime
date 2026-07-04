@@ -86,9 +86,27 @@ def test_message_send_runs_the_agent_and_returns_a_completed_task():
     assert task["status"]["state"] == "completed"
     artifact_text = task["artifacts"][0]["parts"][0]["text"]
     assert artifact_text == "found one bug in auth.py"
+    # A2A clients that only render inline Messages (e.g. OutSystems ODC's chat
+    # UI) rely on this — a bare artifact with no status message is invisible to them.
+    assert task["status"]["message"]["parts"][0]["text"] == "found one bug in auth.py"
+    assert task["status"]["message"]["role"] == "agent"
 
     # the runtime received the plain-text user message extracted from the A2A message
     assert runtime.calls[0][1] == "review auth.py"
+
+
+def test_rpc_endpoint_answers_a_bare_get_for_connector_reachability_probes():
+    client = make_client(StubRuntime())
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "agent": "code-reviewer"}
+
+    # must not appear in the public OpenAPI schema (it carries no A2A semantics)
+    schema = client.get("/openapi.json").json()
+    get_ops = schema["paths"].get("/", {})
+    assert "get" not in get_ops
 
 
 def test_agent_error_surfaces_as_a_failed_task():

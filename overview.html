@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Runtime — Overview</title>
+  <style>
+    :root{--bg:#0f1117;--surface:#1a1d27;--surface2:#222636;--border:#2e3347;--accent:#6c8aff;--accent2:#a78bfa;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--orange:#fb923c;--cyan:#22d3ee;--text:#e2e8f0;--muted:#8892a4;--radius:10px;}
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;line-height:1.6;}
+    a{color:var(--accent);text-decoration:none;}
+    .page{max-width:1100px;margin:0 auto;padding:40px 24px 80px;}
+    header{text-align:center;padding:48px 0 36px;border-bottom:1px solid var(--border);margin-bottom:48px;}
+    header h1{font-size:2.4rem;font-weight:700;}header h1 span{color:var(--accent);}
+    header p{color:var(--muted);margin-top:10px;font-size:1.05rem;}
+    .badge{display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 14px;font-size:0.8rem;color:var(--muted);margin:8px 4px 0;}
+    .badge.green{border-color:var(--green);color:var(--green);}.badge.blue{border-color:var(--accent);color:var(--accent);}.badge.orange{border-color:var(--orange);color:var(--orange);}.badge.purple{border-color:var(--accent2);color:var(--accent2);}
+    h2{font-size:1.35rem;font-weight:600;color:var(--accent);margin-bottom:20px;display:flex;align-items:center;gap:10px;}
+    h2::after{content:'';flex:1;height:1px;background:var(--border);}
+    h3{font-size:1rem;font-weight:600;margin-bottom:8px;}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;}
+    .card+.card{margin-top:16px;}
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+    @media(max-width:720px){.grid-2{grid-template-columns:1fr;}}
+    .flow{display:flex;align-items:center;gap:0;flex-wrap:wrap;margin-bottom:8px;}
+    .flow-box{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:0.83rem;text-align:center;min-width:100px;}
+    .flow-box small{display:block;color:var(--muted);font-size:0.72rem;margin-top:2px;}
+    .flow-box.accent{border-color:var(--accent);color:var(--accent);}.flow-box.green{border-color:var(--green);color:var(--green);}.flow-box.orange{border-color:var(--orange);color:var(--orange);}
+    .flow-arrow{color:var(--muted);font-size:1.2rem;padding:0 8px;}
+    .param-grid{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;font-size:0.88rem;}
+    .param-grid .label{color:var(--muted);white-space:nowrap;}.param-grid .val{color:var(--text);font-family:monospace;}
+    .tag{display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:2px 9px;font-size:0.78rem;color:var(--muted);margin:3px 2px;}
+    section{margin-bottom:52px;}
+    .note{border-color:var(--yellow);}
+    .note h3{color:var(--yellow);}
+  </style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1><span>Agent</span> Runtime</h1>
+    <p>Runs Claude Code-style markdown agents on a local llama.cpp LLM, exposed over the A2A protocol</p>
+    <div>
+      <span class="badge blue">Python 3.11</span>
+      <span class="badge purple">a2a-sdk 0.3.26</span>
+      <span class="badge orange">FastAPI</span>
+      <span class="badge green">llama.cpp (local LLM)</span>
+      <span class="badge">MCP</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>1. What this project does</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Purpose</h3>
+        <p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">
+          A local-first runtime that loads agent definitions written as Claude Code /
+          Cowork-style markdown subagents, runs them against a local llama.cpp model,
+          and exposes each one over the A2A protocol so external systems — primarily
+          OutSystems ODC — can call them. Tool access (Read, Write, Glob, ...) is
+          satisfied entirely through MCP servers; the runtime implements no tools itself.
+        </p>
+        <div>
+          <span class="tag">Markdown agents</span><span class="tag">Multi-agent gateway</span>
+          <span class="tag">MCP tool bridging</span><span class="tag">No cloud LLM dependency</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Stack</h3>
+        <div class="param-grid">
+          <span class="label">Runtime</span><span class="val">Python 3.11</span>
+          <span class="label">Framework</span><span class="val">FastAPI + uvicorn</span>
+          <span class="label">Protocol SDK</span><span class="val">a2a-sdk 0.3.26</span>
+          <span class="label">LLM backend</span><span class="val">llama.cpp llama-server (OpenAI-compatible API)</span>
+          <span class="label">Tool access</span><span class="val">MCP (Model Context Protocol) over stdio</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Request flow</h2>
+    <div class="card">
+      <div style="overflow-x:auto;"><div style="min-width:760px;">
+        <div class="flow">
+          <div class="flow-box accent"><strong>External caller</strong><small>e.g. OutSystems ODC</small></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box"><strong>A2A Gateway</strong><small>/agents/&lt;name&gt;/, JSON-RPC</small></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box"><strong>Agent Runtime</strong><small>tool-calling loop, max 8 iterations</small></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box orange"><strong>llama-server</strong><small>local LLM inference</small></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box"><strong>MCP Client</strong><small>tool calls, e.g. filesystem</small></div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-box green"><strong>Task + Message</strong><small>returned to caller</small></div>
+        </div>
+      </div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. Key files</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>agent_runtime/</h3>
+        <div class="param-grid">
+          <span class="label">loader.py</span><span class="val">Parses agents/*.md frontmatter + system prompt</span>
+          <span class="label">config.py</span><span class="val">Env settings + mcp_servers.json loading</span>
+          <span class="label">mcp_client.py</span><span class="val">Connects MCP servers, aliases tools</span>
+          <span class="label">tool_mapping.py</span><span class="val">Resolves + hard-blocks unsupported tools</span>
+          <span class="label">runtime.py</span><span class="val">Tool-calling loop against the LLM</span>
+          <span class="label">llm_client.py</span><span class="val">llama-server OpenAI-compatible client</span>
+          <span class="label">a2a_gateway.py</span><span class="val">Per-agent A2A sub-apps on one FastAPI process</span>
+          <span class="label">cli.py</span><span class="val">Startup wiring + uvicorn serve</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Endpoints (per agent)</h3>
+        <div class="param-grid">
+          <span class="label">GET /agents</span><span class="val">Index of all mounted agents</span>
+          <span class="label">GET .../.well-known/agent-card.json</span><span class="val">Agent Card (name, skills, url)</span>
+          <span class="label">POST /agents/&lt;name&gt;/</span><span class="val">JSON-RPC: message/send</span>
+          <span class="label">GET /agents/&lt;name&gt;/</span><span class="val">Static 200 — satisfies ODC's reachability probe</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. Configuration</h2>
+    <div class="card">
+      <div class="param-grid">
+        <span class="label">AGENT_RUNTIME_AGENTS_DIR</span><span class="val">Directory of agent .md files (default: agents)</span>
+        <span class="label">AGENT_RUNTIME_AGENT_NAMES</span><span class="val">Comma-separated subset to serve (default: all)</span>
+        <span class="label">AGENT_RUNTIME_LLAMA_BASE_URL</span><span class="val">llama-server URL (default: http://127.0.0.1:8080)</span>
+        <span class="label">AGENT_RUNTIME_MCP_CONFIG</span><span class="val">Path to mcp_servers.json</span>
+        <span class="label">AGENT_RUNTIME_PUBLIC_URL</span><span class="val">Public URL baked into every Agent Card at startup</span>
+        <span class="label">AGENT_RUNTIME_HOST / _PORT</span><span class="val">Gateway bind address (default 0.0.0.0:9000)</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>5. OutSystems ODC integration — confirmed working, two gotchas</h2>
+    <div class="grid-2">
+      <div class="card note">
+        <h3>AGENT_RUNTIME_PUBLIC_URL must be externally reachable</h3>
+        <p style="color:var(--muted);font-size:0.87rem;">
+          The Agent Card's <code>url</code> field is built once at startup from this
+          setting, never inferred from the request. Left at <code>localhost</code>
+          while tunneled (ngrok/Cloudflare Tunnel), ODC's "Get Details" still works
+          (fetches the card) but "Test Connection" fails — it's trying to reach
+          ODC's own localhost, not this machine.
+        </p>
+      </div>
+      <div class="card note">
+        <h3>ODC's taskId must be forced empty</h3>
+        <p style="color:var(--muted);font-size:0.87rem;">
+          ODC's orchestrating LLM sometimes invents a non-UUID <code>taskId</code>
+          on the first turn of a conversation. The A2A SDK hard-rejects any
+          <code>taskId</code> it doesn't already recognize (<code>-32001</code>),
+          which is spec-mandated, not a bug here. Fix is on ODC's side: force that
+          tool parameter to always send empty.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>6. Status</h2>
+    <div class="card">
+      <p style="color:var(--muted);font-size:0.9rem;">
+        Validated end-to-end against a real OutSystems ODC chat agent: ODC fetched an
+        Agent Card, sent a real meeting transcript via <code>message/send</code>, the
+        runtime ran it through the local LLM, and the structured summary rendered back
+        in ODC's chat UI. Seven example agents ship in <code>agents/</code>, several
+        shaped around ODC/Salesforce call patterns. Every request/response and tool
+        call is now logged at INFO level. Not yet built: additional MCP servers beyond
+        filesystem (Tavily, Git, SQLite/Postgres), streaming responses, and
+        authentication on the A2A endpoint itself.
+      </p>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid var(--border);padding-top:20px;text-align:center;color:var(--muted);font-size:0.82rem;">
+    Agent Runtime &nbsp;·&nbsp; Markdown agents on a local LLM, served over A2A &nbsp;·&nbsp; <a href="../index.html">← All Projects</a>
+  </footer>
+</div>
+</body>
+</html>

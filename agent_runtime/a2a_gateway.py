@@ -13,6 +13,8 @@ OutSystems ODC external agent connector.
 
 from __future__ import annotations
 
+import logging
+
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
 from a2a.server.events import EventQueue
@@ -34,6 +36,8 @@ from fastapi import FastAPI
 from .loader import AgentDefinition
 from .runtime import AgentRuntime
 
+logger = logging.getLogger(__name__)
+
 
 class MarkdownAgentExecutor(AgentExecutor):
     """Bridges the A2A request lifecycle to a single AgentRuntime.run() call."""
@@ -52,9 +56,17 @@ class MarkdownAgentExecutor(AgentExecutor):
         await updater.update_status(TaskState.working)
 
         user_text = get_message_text(context.message)
+        logger.info(
+            "Agent '%s': received request (task_id=%s, %d chars)",
+            self._agent.name,
+            task.id,
+            len(user_text),
+        )
+        logger.debug("Agent '%s': request body (task_id=%s): %r", self._agent.name, task.id, user_text)
         try:
             result = await self._runtime.run(self._agent, user_text)
         except Exception as exc:  # noqa: BLE001 - surfaced to the A2A caller as a failed task
+            logger.exception("Agent '%s': request failed (task_id=%s)", self._agent.name, task.id)
             await updater.update_status(
                 TaskState.failed,
                 message=new_agent_text_message(
@@ -63,11 +75,27 @@ class MarkdownAgentExecutor(AgentExecutor):
             )
             return
 
+        logger.info(
+            "Agent '%s': completed request (task_id=%s, tool_calls_made=%d, %d chars)",
+            self._agent.name,
+            task.id,
+            result.tool_calls_made,
+            len(result.text),
+        )
+        logger.debug("Agent '%s': response body (task_id=%s): %r", self._agent.name, task.id, result.text)
         await updater.add_artifact(
             [Part(root=TextPart(text=result.text))],
             name=f"{self._agent.name}-result",
         )
-        await updater.update_status(TaskState.completed)
+        # Alongside the artifact, also attach a plain agent Message carrying the
+        # same text. Some A2A clients (e.g. OutSystems ODC's chat UI) only render
+        # a Message inline and treat a bare Task+artifact as fire-and-forget,
+        # surfacing just "task in progress, check back later" and never
+        # displaying the result even after the task reaches "completed".
+        await updater.update_status(
+            TaskState.completed,
+            message=new_agent_text_message(result.text, context_id=task.context_id, task_id=task.id),
+        )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise ServerError(error=UnsupportedOperationError())
@@ -99,7 +127,19 @@ def build_agent_app(agent: AgentDefinition, runtime: AgentRuntime, public_url: s
     executor = MarkdownAgentExecutor(agent, runtime)
     request_handler = DefaultRequestHandler(agent_executor=executor, task_store=InMemoryTaskStore())
     application = A2AFastAPIApplication(agent_card=agent_card, http_handler=request_handler)
-    return application.build()
+    app = application.build()
+
+    # The A2A RPC endpoint ("/") is POST-only per spec. Some external-agent
+    # connectors (e.g. OutSystems ODC's "Test Connection") probe it with a
+    # bare GET as a reachability check before ever sending a JSON-RPC call;
+    # without this, that GET hits FastAPI's default 405 and the connector
+    # reports the agent as unreachable. This route only answers that probe —
+    # it carries no A2A semantics of its own.
+    @app.get("/", include_in_schema=False)
+    async def rpc_endpoint_probe() -> dict[str, str]:
+        return {"status": "ok", "agent": agent.name}
+
+    return app
 
 
 def _agent_base_url(gateway_base_url: str, agent_name: str) -> str:
