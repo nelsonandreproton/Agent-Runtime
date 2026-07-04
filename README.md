@@ -166,6 +166,35 @@ If you use `npx -y <package>` to run a server, be aware that in some sandboxed/p
 
 For each markdown agent you want to expose, register a separate ODC external agent connector pointed at that agent's own Agent Card URL — e.g. `https://your-host:9000/agents/code-reviewer/.well-known/agent-card.json` — not at the gateway's bare base URL (`AGENT_RUNTIME_PUBLIC_URL`). ODC should be able to fetch that card and call `message/send` against the matching RPC endpoint per the A2A spec. Since these agents currently declare `streaming: false`, use ODC's non-streaming/synchronous call path. You'll need the gateway reachable from ODC — for Near's own on-prem `llama.cpp` box that most likely means a reverse proxy or tunnel exposing the gateway's port, which is a deployment detail worth nailing down before going further.
 
+### Exposing a local gateway to ODC with Cloudflare Tunnel
+
+For testing against real ODC before a permanent domain/reverse-proxy exists, [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) can punch a public HTTPS URL through to a gateway running on your own machine, with no account or DNS setup required for a quick/ad-hoc tunnel.
+
+1. **Install `cloudflared`:**
+   - Windows: `winget install --id Cloudflare.cloudflared -e` (installs to `C:\Program Files (x86)\cloudflared\cloudflared.exe`)
+   - macOS: `brew install cloudflared`
+   - Linux: see [Cloudflare's install docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+
+2. **Start the gateway first** (`./scripts/run_gateway.sh` or `.\scripts\run_gateway.ps1` on Windows), listening on its default port 9000.
+
+3. **Start a quick tunnel pointed at the gateway:**
+   ```bash
+   cloudflared tunnel --url http://localhost:9000
+   ```
+   This prints a random public URL like `https://some-random-words.trycloudflare.com` within a few seconds. Leave this process running — closing it tears down the tunnel.
+
+4. **Point `AGENT_RUNTIME_PUBLIC_URL` at that tunnel URL and restart the gateway** — this step is not optional. The Agent Card's `url` field is baked in at gateway startup (see the `AGENT_RUNTIME_PUBLIC_URL` note above), so ODC will only be able to complete "Test Connection" (not just "Get Details") once the gateway has been restarted with the tunnel's actual URL set:
+   ```
+   AGENT_RUNTIME_PUBLIC_URL=https://some-random-words.trycloudflare.com/
+   ```
+
+5. **Register the ODC connector** against `https://some-random-words.trycloudflare.com/agents/<agent-name>/.well-known/agent-card.json`.
+
+Notes:
+- A `trycloudflare.com` quick tunnel is unauthenticated, has no uptime guarantee, and gets a **new random URL every time `cloudflared` restarts** — expect to update `AGENT_RUNTIME_PUBLIC_URL` and restart the gateway again after any tunnel restart. It's meant for short-lived testing, not a permanent setup.
+- For a stable long-term URL, either use a [named Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/) tied to a domain you control, or move to a real reverse-proxy deployment (see "Deploy to Hetzner" patterns used by sibling A2A projects in this workspace).
+- Any tunnel provider works the same way in principle (ngrok is a common alternative) — the only thing that matters to this runtime is that `AGENT_RUNTIME_PUBLIC_URL` matches whatever public URL is currently active.
+
 **`AGENT_RUNTIME_PUBLIC_URL` must be the address ODC (not you) can reach.** Every Agent Card's `url` field — the RPC endpoint ODC actually connects to — is built from `AGENT_RUNTIME_PUBLIC_URL` once at gateway startup; it's never inferred from the request. If this is still `http://localhost:9000/` while the gateway is exposed through ngrok, Cloudflare Tunnel, or a reverse proxy, ODC's "Get Details" (which just fetches the Agent Card) will succeed, but "Test Connection" (which connects to the card's `url`) will fail with a generic connection error — because it's trying to reach ODC's own `localhost`, not your machine. Whenever the public URL changes, update `AGENT_RUNTIME_PUBLIC_URL` in `config/.env` and restart the gateway.
 
 **In ODC's tool/action settings for this agent, force the `taskId` parameter to always send empty.** ODC's own orchestrating LLM will sometimes populate the optional `taskId` parameter on its `message/send` tool call with a self-invented, non-UUID string (observed: it reused the action's own name, e.g. `summarize-meeting-notes`) even on a brand-new conversation turn. The A2A SDK's `DefaultRequestHandler` treats any `taskId` as a reference to an *existing* task and hard-rejects one it doesn't recognize with JSON-RPC error `-32001 Task <id> was specified but does not exist` — there is no server-side setting to relax this, since it's spec-mandated task-continuation behavior, not a bug in this gateway. Symptom in ODC chat: the agent replies "task is currently in progress... check back later" and never surfaces the actual answer, because the call failed before your agent ever ran. Fix on the ODC side: configure the `taskId` parameter to always be sent empty rather than left to the LLM's discretion.
