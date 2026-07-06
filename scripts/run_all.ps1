@@ -1,10 +1,16 @@
 # Starts the full local stack as three tabs in one Windows Terminal window
-# (LLM, NGROK, GATEWAY) — llama.cpp's local LLM, the ngrok tunnel (static
+# (LLM, NGROK, GATEWAY): llama.cpp's local LLM, the ngrok tunnel (static
 # domain), and the A2A gateway, in that order, waiting for each to be ready
 # before starting the next. Requires Windows Terminal (wt.exe) on PATH.
 #
 # Edit the constants below to match your setup (model, ngrok domain, llama.cpp
 # install path) before running.
+#
+# ASCII only in this file, deliberately: Windows PowerShell 5.1 reading a
+# non-BOM UTF-8 file under a non-UTF-8 console codepage can misdecode
+# multi-byte characters (e.g. an em dash) mid-string, breaking string
+# termination with a "missing terminator" parse error that only appears when
+# run for real, not from a pre-parsed AST check.
 
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -39,12 +45,12 @@ for ($i = 0; $i -lt 120; $i++) {
             break
         }
     } catch {
-        # Not up yet (or still loading the model) — keep polling.
+        # Not up yet (or still loading the model) - keep polling.
     }
     Start-Sleep -Seconds 2
 }
 if (-not $llamaReady) {
-    Write-Warning "llama.cpp did not report healthy within 4 minutes — continuing anyway. Check the LLM tab for errors (e.g. still downloading/loading a large model)."
+    Write-Warning "llama.cpp did not report healthy within 4 minutes - continuing anyway. Check the LLM tab for errors (e.g. still downloading/loading a large model)."
 } else {
     Write-Host "llama.cpp is ready."
 }
@@ -66,12 +72,12 @@ for ($i = 0; $i -lt 30; $i++) {
             break
         }
     } catch {
-        # ngrok's local API not up yet — keep polling.
+        # ngrok's local API not up yet - keep polling.
     }
     Start-Sleep -Seconds 1
 }
 if (-not $ngrokReady) {
-    Write-Warning "Could not confirm the ngrok tunnel is up within 30s — continuing anyway. Check the NGROK tab."
+    Write-Warning "Could not confirm the ngrok tunnel is up within 30s - continuing anyway. Check the NGROK tab."
 } else {
     Write-Host "ngrok tunnel is up at https://$NgrokDomain"
 }
@@ -79,8 +85,13 @@ if (-not $ngrokReady) {
 # --- 3. A2A gateway ------------------------------------------------------
 
 Write-Host "Opening GATEWAY tab..."
-Write-Host "Reminder: config\.env's AGENT_RUNTIME_PUBLIC_URL must be https://$NgrokDomain/ — the Agent Card is only built once at startup, so a mismatch here means ODC's 'Test Connection' will fail even though 'Get Details' succeeds."
-$gatewayCommand = "Set-Location `"$PSScriptRoot`"; .\run_gateway.ps1"
-wt.exe -w 0 new-tab --title "GATEWAY" powershell -NoExit -Command $gatewayCommand
+Write-Host "Reminder: config\.env's AGENT_RUNTIME_PUBLIC_URL must be https://$NgrokDomain/ - the Agent Card is only built once at startup, so a mismatch here means ODC's Test Connection will fail even though Get Details succeeds."
+# wt.exe treats an unescaped ';' as its OWN command separator (chaining
+# another wt subcommand), not as part of the -Command argument being passed
+# through to powershell -- a literal ';' in $gatewayCommand below was
+# splitting this into two wt invocations, opening a stray extra tab and
+# truncating the real command. Avoid the problem entirely by calling
+# run_gateway.ps1 directly instead of chaining Set-Location + it with ';'.
+wt.exe -w 0 new-tab --title "GATEWAY" powershell -NoExit -Command "& `"$PSScriptRoot\run_gateway.ps1`""
 
 Write-Host "All three processes started as tabs (LLM, NGROK, GATEWAY) in one Windows Terminal window. Close/Ctrl+C each tab individually to stop it."
