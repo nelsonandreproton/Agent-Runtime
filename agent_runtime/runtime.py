@@ -50,7 +50,7 @@ class AgentRuntime:
 
         tool_calls_made = 0
         for iteration in range(MAX_TOOL_ITERATIONS):
-            message = await self._llm.chat(messages, tools=tools_schema or None)
+            message = await self._llm.chat(messages, tools=tools_schema or None, model=agent.model)
             tool_calls = message.get("tool_calls")
             if not tool_calls:
                 content = message.get("content") or ""
@@ -73,12 +73,52 @@ class AgentRuntime:
                 agent.name,
                 iteration,
                 len(tool_calls),
-                [c["function"]["name"] for c in tool_calls],
+                [_tool_call_name(c) for c in tool_calls],
             )
-            messages.append(message)
-            for call in tool_calls:
+
+            # A local model can emit a tool_call missing fields the OpenAI shape
+            # requires (id and/or function.name) — small local models are more
+            # prone to this than frontier APIs. Without an `id` there is no way
+            # to correlate a tool response back to it, and the OpenAI/llama.cpp
+            # chat-template contract requires every tool_calls entry in an
+            # assistant turn to have a matching tool-role reply — so an entry we
+            # can't answer must not be sent at all, or the *next* turn fails
+            # instead of this one. Split into answerable vs. unanswerable before
+            # appending the assistant turn.
+            answerable = []
+            malformed = []
+            for c in tool_calls:
+                (answerable if isinstance(c, dict) and c.get("id") else malformed).append(c)
+            if malformed:
+                logger.warning(
+                    "Agent '%s': dropping %d malformed tool_call(s) with no usable id",
+                    agent.name,
+                    len(malformed),
+                )
+                logger.debug("Agent '%s': malformed tool_call(s): %r", agent.name, _truncate(repr(malformed)))
+            if not answerable:
+                # Nothing left to send a tool-role reply for; still record the
+                # assistant's (fully malformed) turn as informational content so
+                # the model has some memory of having tried, then let it retry.
+                messages.append({"role": "assistant", "content": message.get("content") or ""})
+                continue
+            messages.append({**message, "tool_calls": answerable})
+
+            for call in answerable:
                 tool_calls_made += 1
-                tool_name = call["function"]["name"]
+                call_id = call["id"]
+                tool_name = _tool_call_name(call)
+                if tool_name is None:
+                    logger.warning("Agent '%s': tool_call '%s' missing function.name", agent.name, call_id)
+                    logger.debug("Agent '%s': malformed tool_call: %r", agent.name, _truncate(repr(call)))
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": "Error: malformed tool call (missing function name)",
+                        }
+                    )
+                    continue
                 logger.debug(
                     "Agent '%s': calling tool '%s' with args %r",
                     agent.name,
@@ -102,7 +142,7 @@ class AgentRuntime:
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": call["id"],
+                        "tool_call_id": call_id,
                         "content": f"Error: {result_text}" if is_error else result_text,
                     }
                 )
@@ -121,6 +161,17 @@ class AgentRuntime:
         except json.JSONDecodeError:
             return f"Could not parse arguments for tool '{name}'", True
         return await self._mcp.call(name, arguments)
+
+
+def _tool_call_name(call: object) -> str | None:
+    """Best-effort tool name extraction from a possibly-malformed tool_call dict."""
+    if not isinstance(call, dict):
+        return None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    name = function.get("name")
+    return name if isinstance(name, str) and name else None
 
 
 def _truncate(text: str) -> str:

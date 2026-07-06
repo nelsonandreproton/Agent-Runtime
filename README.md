@@ -102,7 +102,10 @@ pip install -e ".[dev]"
 # 2. Configure which MCP servers back which Claude Code tools.
 cp config/mcp_servers.example.json config/mcp_servers.json
 cp config/.env.example config/.env
-# edit both: point the filesystem server at the directory these agents may read.
+# mcp_servers.json's filesystem server args already use the {WORKING_DIR}
+# placeholder — set AGENT_RUNTIME_WORKING_DIR in .env to the one directory
+# these agents may Read/Write/Edit/Glob (never the repo root: the gateway
+# refuses to start if it overlaps config/, which holds your secrets).
 # By default every agent in agents/ is served; set AGENT_RUNTIME_AGENT_NAMES
 # to a comma-separated list to expose only a subset.
 
@@ -203,5 +206,6 @@ Notes:
 
 - `Bash` (and a handful of other Claude Code tools with no safe MCP equivalent — see `tool_mapping.UNSUPPORTED_TOOLS`) is never exposed to an agent over this gateway, even if an agent's frontmatter requests it and even if a misconfigured `mcp_servers.json` tries to map it — this is enforced in code, not just by omission.
 - MCP server subprocesses are spawned with a minimal environment (no ambient credentials from this process), with only proxy variables (`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`) passed through so package runners work behind a corporate proxy.
-- The filesystem MCP server should always be scoped to the narrowest directory an agent actually needs — it's the sandbox boundary for `Read`/`Write`/`Edit`/`Glob`.
+- The filesystem MCP server is scoped to `AGENT_RUNTIME_WORKING_DIR` (via the `{WORKING_DIR}` placeholder in `mcp_servers.json`) — the sandbox boundary for `Read`/`Write`/`Edit`/`Glob`. This is enforced, not just advisory: the gateway refuses to start (`SystemExit`) if `AGENT_RUNTIME_WORKING_DIR` overlaps `config/`, which holds `.env` and `mcp_servers.json`. Never point it at the repo root.
+- MCP tool calls are bounded by `AGENT_RUNTIME_MCP_TIMEOUT` — a hung or slow MCP server subprocess surfaces as a normal tool error instead of stalling the shared connection pool (and therefore every agent) indefinitely.
 - There is currently no authentication on the A2A endpoint itself; put it behind network-level access control (VPN, firewall rules, reverse-proxy auth) before exposing it beyond a trusted network, especially once reachable from ODC.

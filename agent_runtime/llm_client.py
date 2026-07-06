@@ -22,14 +22,21 @@ class LlamaServerClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.2,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Sends a chat completion request and returns the assistant message dict.
 
         The returned dict follows the OpenAI chat message shape: {"role": "assistant",
         "content": str | None, "tool_calls": [...] | absent}.
+
+        `model` overrides the client's configured default for this call only —
+        used to honor an agent's frontmatter `model:` field. llama-server ignores
+        `model` for routing (it only ever serves the one model it was started
+        with) but still echoes it back, so this is forward-compatible with any
+        OpenAI-compatible backend that does route by model name.
         """
         payload: dict[str, Any] = {
-            "model": self._model,
+            "model": model or self._model,
             "messages": messages,
             "temperature": temperature,
         }

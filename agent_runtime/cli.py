@@ -43,7 +43,11 @@ async def run() -> None:
         raise SystemExit(f"No agent .md files found in {settings.agents_dir}")
     logger.info("Loaded agents: %s", [a.name for a in agents])
 
-    mcp_client = MCPToolsClient(load_mcp_servers(settings.mcp_config_path))
+    settings.working_dir.mkdir(parents=True, exist_ok=True)
+    mcp_client = MCPToolsClient(
+        load_mcp_servers(settings.mcp_config_path, working_dir=settings.working_dir),
+        call_timeout=settings.mcp_call_timeout,
+    )
     await mcp_client.connect_all()
     logger.info("MCP tools available: %s", mcp_client.known_aliases() or "(none)")
 

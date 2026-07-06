@@ -8,6 +8,7 @@ frontmatter already uses (Read, Write, Edit, Glob, ...).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -38,6 +39,26 @@ _PASSTHROUGH_ENV_VARS = (
 )
 
 
+def _build_subprocess_env(server_env: dict[str, str]) -> dict[str, str]:
+    """Builds the environment an MCP server subprocess is spawned with.
+
+    Starts from the MCP SDK's minimal default env (HOME/PATH/...) rather than
+    this process's full os.environ, so a third-party MCP server never inherits
+    secrets (API keys, tokens) this process happens to have. Proxy variables
+    are the one explicit exception — package runners like npx/uvx need them
+    to reach their registries from behind a corporate proxy — and the
+    server's own config.env (e.g. an API key it specifically needs) is
+    applied last so it can override either.
+    """
+    env = get_default_environment()
+    for key in _PASSTHROUGH_ENV_VARS:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    env.update(server_env)
+    return env
+
+
 @dataclass(frozen=True)
 class ResolvedTool:
     server_name: str
@@ -46,20 +67,19 @@ class ResolvedTool:
     input_schema: dict[str, Any]
 
 
+class MCPToolCallTimeout(RuntimeError):
+    """Raised when an MCP server doesn't respond to a tool call within the configured timeout."""
+
+
 class MCPServerConnection:
-    def __init__(self, config: MCPServerConfig):
+    def __init__(self, config: MCPServerConfig, call_timeout: float = 60.0):
         self.config = config
+        self._call_timeout = call_timeout
         self._exit_stack = contextlib.AsyncExitStack()
         self.session: ClientSession | None = None
 
     async def connect(self) -> None:
-        env = get_default_environment()
-        for key in _PASSTHROUGH_ENV_VARS:
-            value = os.environ.get(key)
-            if value:
-                env[key] = value
-        env.update(self.config.env)
-
+        env = _build_subprocess_env(self.config.env)
         params = StdioServerParameters(command=self.config.command, args=self.config.args, env=env)
         read, write = await self._exit_stack.enter_async_context(stdio_client(params))
         self.session = await self._exit_stack.enter_async_context(ClientSession(read, write))
@@ -76,7 +96,16 @@ class MCPServerConnection:
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         assert self.session is not None
-        result = await self.session.call_tool(name, arguments)
+        try:
+            result = await asyncio.wait_for(self.session.call_tool(name, arguments), timeout=self._call_timeout)
+        except asyncio.TimeoutError as exc:
+            # A hung/slow MCP server must not stall this request indefinitely —
+            # the connection pool is shared across every agent, so an unbounded
+            # await here degrades the whole gateway, not just one caller.
+            raise MCPToolCallTimeout(
+                f"MCP server '{self.config.name}' did not respond to tool '{name}' "
+                f"within {self._call_timeout}s"
+            ) from exc
         text_parts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
         if text_parts:
             text = "\n".join(text_parts)
@@ -88,14 +117,15 @@ class MCPServerConnection:
 class MCPToolsClient:
     """Aggregates one or more MCP servers behind a single Claude-Code-tool-alias namespace."""
 
-    def __init__(self, servers: list[MCPServerConfig]):
+    def __init__(self, servers: list[MCPServerConfig], call_timeout: float = 60.0):
         self._configs = servers
+        self._call_timeout = call_timeout
         self._connections: dict[str, MCPServerConnection] = {}
         self._resolved: dict[str, ResolvedTool] = {}
 
     async def connect_all(self) -> None:
         for config in self._configs:
-            conn = MCPServerConnection(config)
+            conn = MCPServerConnection(config, call_timeout=self._call_timeout)
             await conn.connect()
             self._connections[config.name] = conn
 
@@ -147,4 +177,12 @@ class MCPToolsClient:
         if resolved is None:
             return f"Tool '{alias}' is not available in this runtime.", True
         conn = self._connections[resolved.server_name]
-        return await conn.call_tool(resolved.mcp_name, arguments)
+        try:
+            return await conn.call_tool(resolved.mcp_name, arguments)
+        except MCPToolCallTimeout as exc:
+            # Surfaced to the model as a tool error (same shape as any other
+            # tool failure) rather than propagating and failing the whole task —
+            # a timeout on one call shouldn't prevent the model from trying
+            # something else or giving a partial answer.
+            logger.warning("Tool '%s' timed out: %s", alias, exc)
+            return str(exc), True

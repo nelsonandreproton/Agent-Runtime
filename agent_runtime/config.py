@@ -19,22 +19,63 @@ class MCPServerConfig:
     tool_aliases: dict[str, str] = field(default_factory=dict)
 
 
-def load_mcp_servers(path: Path | None) -> list[MCPServerConfig]:
+# Placeholder an mcp_servers.json entry can use in `args`/`env` values in place
+# of a hardcoded filesystem path, e.g. ["mcp-server-filesystem", "{WORKING_DIR}"].
+# load_mcp_servers() substitutes it with the runtime's configured working_dir
+# and verifies the resulting path is still inside it (guards {WORKING_DIR}/../x
+# style escapes) — this is the one enforced sandbox root every filesystem-
+# capable MCP server is scoped to, kept separate from the runtime's own source
+# and config/ (which holds secrets an agent must never be able to read).
+WORKING_DIR_PLACEHOLDER = "{WORKING_DIR}"
+
+
+class MCPServerConfigError(ValueError):
+    """Raised when an mcp_servers.json entry resolves outside the configured working_dir."""
+
+
+def load_mcp_servers(path: Path | None, working_dir: Path | None = None) -> list[MCPServerConfig]:
     if path is None or not path.exists():
         return []
     data = json.loads(path.read_text(encoding="utf-8"))
+    resolved_working_dir = working_dir.resolve() if working_dir is not None else None
     servers = []
     for entry in data.get("servers", []):
         servers.append(
             MCPServerConfig(
                 name=entry["name"],
                 command=entry["command"],
-                args=entry.get("args", []),
-                env=entry.get("env", {}),
+                args=[
+                    _substitute_working_dir(v, resolved_working_dir, entry["name"]) for v in entry.get("args", [])
+                ],
+                env={
+                    k: _substitute_working_dir(v, resolved_working_dir, entry["name"])
+                    for k, v in entry.get("env", {}).items()
+                },
                 tool_aliases=entry.get("tool_aliases", {}),
             )
         )
     return servers
+
+
+def _substitute_working_dir(value: str, working_dir: Path | None, server_name: str) -> str:
+    if WORKING_DIR_PLACEHOLDER not in value:
+        return value
+    if working_dir is None:
+        raise MCPServerConfigError(
+            f"MCP server '{server_name}' uses {WORKING_DIR_PLACEHOLDER} but no "
+            "AGENT_RUNTIME_WORKING_DIR is configured"
+        )
+    substituted = value.replace(WORKING_DIR_PLACEHOLDER, str(working_dir))
+    resolved = Path(substituted).resolve()
+    if resolved != working_dir and working_dir not in resolved.parents:
+        # Guards a {WORKING_DIR}/../escape style value — the placeholder alone
+        # only prevents hardcoding a path outside working_dir, not a relative
+        # escape appended to it.
+        raise MCPServerConfigError(
+            f"MCP server '{server_name}': '{value}' resolves to '{resolved}', outside "
+            f"the configured working_dir '{working_dir}'"
+        )
+    return substituted
 
 
 @dataclass(frozen=True)
@@ -46,10 +87,17 @@ class Settings:
     llama_base_url: str
     llama_model: str
     mcp_config_path: Path | None
+    # The one directory any filesystem-capable MCP server may be scoped to
+    # (via the {WORKING_DIR} placeholder in mcp_servers.json). Deliberately
+    # separate from the runtime's own source and from config/, which holds
+    # .env and mcp_servers.json — an agent must never be able to read those
+    # off disk even though it can execute arbitrary Read/Glob calls.
+    working_dir: Path
     gateway_host: str
     gateway_port: int
     public_url: str
     request_timeout: float
+    mcp_call_timeout: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -57,6 +105,17 @@ class Settings:
         port = int(os.environ.get("AGENT_RUNTIME_PORT", "9000"))
         mcp_config = os.environ.get("AGENT_RUNTIME_MCP_CONFIG")
         agent_names_raw = os.environ.get("AGENT_RUNTIME_AGENT_NAMES")
+        working_dir = Path(os.environ.get("AGENT_RUNTIME_WORKING_DIR", "data")).resolve()
+        secrets_dir = (Path(__file__).resolve().parent.parent / "config").resolve()
+        if secrets_dir == working_dir or secrets_dir in working_dir.parents or working_dir in secrets_dir.parents:
+            # config/ (.env, mcp_servers.json) must stay structurally outside
+            # whatever filesystem-capable MCP servers are scoped to — an agent
+            # must never be able to Read/Glob its way to those secrets.
+            raise SystemExit(
+                f"AGENT_RUNTIME_WORKING_DIR ('{working_dir}') overlaps with '{secrets_dir}', which "
+                "holds .env and mcp_servers.json. Point AGENT_RUNTIME_WORKING_DIR at a directory "
+                "structurally separate from config/."
+            )
         return cls(
             agents_dir=Path(os.environ.get("AGENT_RUNTIME_AGENTS_DIR", "agents")),
             agent_names=(
@@ -65,8 +124,10 @@ class Settings:
             llama_base_url=os.environ.get("AGENT_RUNTIME_LLAMA_BASE_URL", "http://127.0.0.1:8080"),
             llama_model=os.environ.get("AGENT_RUNTIME_LLAMA_MODEL", "local-model"),
             mcp_config_path=Path(mcp_config) if mcp_config else None,
+            working_dir=working_dir,
             gateway_host=host,
             gateway_port=port,
             public_url=os.environ.get("AGENT_RUNTIME_PUBLIC_URL", f"http://{host}:{port}/"),
             request_timeout=float(os.environ.get("AGENT_RUNTIME_TIMEOUT", "120")),
+            mcp_call_timeout=float(os.environ.get("AGENT_RUNTIME_MCP_TIMEOUT", "60")),
         )
