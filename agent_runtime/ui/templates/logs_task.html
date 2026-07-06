@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Task {{ task_id }}{% endblock %}
+
+{% block content %}
+<h1>Task {{ task_id }}</h1>
+<p><a href="/ui/logs">&larr; Back to logs</a></p>
+
+{% if log_store_disabled %}
+<p class="hint">Logging is disabled — set AGENT_RUNTIME_OBSERVABILITY_DB to enable it.</p>
+{% elif not events %}
+<p class="hint">No events found for this task.</p>
+{% else %}
+<ul class="timeline">
+  {% for event in events %}
+  <li>
+    <span class="event-type">{{ event.event_type }}</span>
+    <span>{{ event.timestamp }}</span> — <span>{{ event.agent_name }}</span>
+    <pre>{{ event.content }}</pre>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "New Agent" if is_new else "Edit " + name }}{% endblock %}
+
+{% block content %}
+<h1>{{ "New Agent" if is_new else "Edit Agent" }}</h1>
+
+<form class="card" method="post" action="/ui/agents/{{ original_name }}">
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" value="{{ name }}" required>
+
+  <label for="description">Description</label>
+  <input type="text" id="description" name="description" value="{{ description }}" required>
+
+  <label for="tools">Tools</label>
+  <textarea id="tools" name="tools" rows="6">{{ tools_text }}</textarea>
+  <p class="hint">One tool per line (or comma-separated). Leave blank to inherit all available tools.</p>
+
+  <label for="model">Model</label>
+  <input type="text" id="model" name="model" value="{{ model }}">
+  <p class="hint">Leave blank to use the runtime's default model.</p>
+
+  <label for="system_prompt">System Prompt</label>
+  <textarea id="system_prompt" name="system_prompt" rows="16" required>{{ system_prompt }}</textarea>
+
+  <p><button type="submit" class="btn btn-primary">Save</button></p>
+</form>
+{% endblock %}

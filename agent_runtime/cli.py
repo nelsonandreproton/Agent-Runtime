@@ -13,6 +13,7 @@ from .config import Settings, load_mcp_servers
 from .llm_client import LlamaServerClient
 from .loader import load_all_agents
 from .mcp_client import MCPToolsClient
+from .observability import LogStore
 from .runtime import AgentRuntime
 from .task_store import SQLiteTaskStore
 
@@ -57,7 +58,13 @@ async def run() -> None:
         model=settings.llama_model,
         timeout=settings.request_timeout,
     )
-    agent_runtime = AgentRuntime(llm_client, mcp_client)
+
+    log_store = None
+    if settings.observability_db_path is not None:
+        log_store = LogStore(settings.observability_db_path)
+        logger.info("Logging agent activity to %s (for the local UI's Logs tab)", settings.observability_db_path)
+
+    agent_runtime = AgentRuntime(llm_client, mcp_client, log_store=log_store)
 
     task_store = None
     if settings.task_store_path is not None:
@@ -66,7 +73,7 @@ async def run() -> None:
     else:
         logger.warning("AGENT_RUNTIME_TASK_STORE_PATH unset: task state is in-memory only, lost on restart")
 
-    app = build_gateway_app(agents, agent_runtime, settings.public_url, task_store=task_store)
+    app = build_gateway_app(agents, agent_runtime, settings.public_url, task_store=task_store, log_store=log_store)
     server = uvicorn.Server(
         uvicorn.Config(app, host=settings.gateway_host, port=settings.gateway_port, log_level="info")
     )
@@ -81,6 +88,8 @@ async def run() -> None:
         finally:
             if task_store is not None:
                 task_store.close()
+            if log_store is not None:
+                log_store.close()
 
 
 def main() -> None:

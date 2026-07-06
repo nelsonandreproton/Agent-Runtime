@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from agent_runtime.loader import AgentDefinition
+from agent_runtime.observability import LogStore
 from agent_runtime.runtime import MAX_TOOL_ITERATIONS, AgentRuntime
 
 
@@ -271,6 +272,50 @@ async def test_tool_call_missing_id_is_skipped_without_crashing():
     second_call_messages = llm.calls[1]
     assert not any(m.get("role") == "assistant" and m.get("tool_calls") for m in second_call_messages)
     assert not any(m.get("role") == "tool" for m in second_call_messages)
+
+
+@pytest.mark.asyncio
+async def test_tool_call_and_result_are_recorded_to_the_log_store_when_provided(tmp_path):
+    llm = FakeLLM(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "Read", "arguments": json.dumps({"path": "a.py"})},
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "done reading"},
+        ]
+    )
+    mcp = FakeMCP(aliases=["Read"], call_result=("file contents", False))
+    log_store = LogStore(tmp_path / "observability.db")
+
+    runtime = AgentRuntime(llm, mcp, log_store=log_store)
+    await runtime.run(make_agent(tools=["Read"]), "read a.py", task_id="task-123")
+
+    events = log_store.get_task_events("task-123")
+    event_types = [e["event_type"] for e in events]
+    assert event_types == ["tool_call", "tool_result"]
+    assert "Read" in events[0]["content"]
+    assert "a.py" in events[0]["content"]
+    assert events[1]["content"] == "file contents"
+    assert all(e["agent_name"] == "test-agent" for e in events)
+    log_store.close()
+
+
+@pytest.mark.asyncio
+async def test_no_log_store_means_no_recording_and_no_crash():
+    llm = FakeLLM([{"role": "assistant", "content": "final answer"}])
+    mcp = FakeMCP(aliases=["Read"])
+
+    runtime = AgentRuntime(llm, mcp)  # log_store defaults to None
+    result = await runtime.run(make_agent(tools=["Read"]), "hello")
+
+    assert result.text == "final answer"
 
 
 @pytest.mark.asyncio

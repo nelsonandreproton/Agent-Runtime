@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Agents{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1>Agents</h1>
+  <a class="btn btn-primary" href="/ui/agents/new">New Agent</a>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Description</th>
+      <th>Model</th>
+      <th>Tools</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    {% if row.ok %}
+    <tr>
+      <td>{{ row.agent.name }}</td>
+      <td>{{ row.agent.description }}</td>
+      <td>{{ row.agent.model or "default" }}</td>
+      <td>{{ row.agent.tools|join(", ") if row.agent.tools else "all" }}</td>
+      <td class="actions">
+        <a class="btn" href="/ui/agents/{{ row.agent.name }}/edit">Edit</a>
+        <form method="post" action="/ui/agents/{{ row.agent.name }}/delete" style="display:inline"
+              data-confirm-message="Delete agent {{ row.agent.name }}?"
+              onsubmit="return confirmDeleteForm(this)">
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr class="malformed">
+      <td colspan="4">{{ row.path }}: {{ row.error }}</td>
+      <td class="actions"></td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

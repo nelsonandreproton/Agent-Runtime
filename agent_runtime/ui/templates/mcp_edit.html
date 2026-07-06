@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "New MCP Server" if is_new else "Edit " + name }}{% endblock %}
+
+{% block content %}
+<h1>{{ "New MCP Server" if is_new else "Edit MCP Server" }}</h1>
+
+{% if comments %}
+{% for comment_value in comments.values() %}
+<div class="hint">Note: {{ comment_value }}</div>
+{% endfor %}
+{% endif %}
+
+{# Env/tool_alias values are plain text inputs here, not masked: you are
+   actively editing them and need to see/change the real value. Masking only
+   matters on the list page, where you are just glancing at server rows. #}
+<form class="card" method="post" action="/ui/mcp-servers/{{ original_name }}">
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" value="{{ name }}" required>
+
+  <label for="command">Command</label>
+  <input type="text" id="command" name="command" value="{{ command }}" required>
+  <p class="hint">Absolute interpreter path recommended for non-system Python servers.</p>
+
+  <label for="args">Args</label>
+  <textarea id="args" name="args" rows="4">{{ args_text }}</textarea>
+  <p class="hint">One argument per line.</p>
+
+  <label>Env</label>
+  <div class="kv-rows">
+    {% for key, value in env.items() %}
+    <div class="kv-row">
+      <input type="text" name="env_key" value="{{ key }}" placeholder="key">
+      <input type="text" name="env_value" value="{{ value }}" placeholder="value">
+      <button type="button" class="btn" onclick="this.parentElement.remove()">Remove</button>
+    </div>
+    {% endfor %}
+    <div class="kv-row">
+      <input type="text" name="env_key" placeholder="key">
+      <input type="text" name="env_value" placeholder="value">
+      <button type="button" class="btn" onclick="this.parentElement.remove()">Remove</button>
+    </div>
+    <button type="button" class="btn" onclick="addKvRow(this, 'env')">Add</button>
+  </div>
+
+  <label>Tool Aliases</label>
+  <div class="kv-rows">
+    {% for key, value in tool_aliases.items() %}
+    <div class="kv-row">
+      <input type="text" name="tool_aliases_key" value="{{ key }}" placeholder="key">
+      <input type="text" name="tool_aliases_value" value="{{ value }}" placeholder="value">
+      <button type="button" class="btn" onclick="this.parentElement.remove()">Remove</button>
+    </div>
+    {% endfor %}
+    <div class="kv-row">
+      <input type="text" name="tool_aliases_key" placeholder="key">
+      <input type="text" name="tool_aliases_value" placeholder="value">
+      <button type="button" class="btn" onclick="this.parentElement.remove()">Remove</button>
+    </div>
+    <button type="button" class="btn" onclick="addKvRow(this, 'tool_aliases')">Add</button>
+  </div>
+
+  <p><button type="submit" class="btn btn-primary">Save</button></p>
+</form>
+{% endblock %}

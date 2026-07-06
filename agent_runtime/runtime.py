@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from .llm_client import LlamaServerClient
 from .loader import AgentDefinition
 from .mcp_client import MCPToolsClient
+from .observability import LogStore
 from .tool_mapping import resolve_agent_tools
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,12 @@ class RuntimeResult:
 
 
 class AgentRuntime:
-    def __init__(self, llm_client: LlamaServerClient, mcp_client: MCPToolsClient):
+    def __init__(self, llm_client: LlamaServerClient, mcp_client: MCPToolsClient, log_store: LogStore | None = None):
         self._llm = llm_client
         self._mcp = mcp_client
+        self._log_store = log_store
 
-    async def run(self, agent: AgentDefinition, user_message: str) -> RuntimeResult:
+    async def run(self, agent: AgentDefinition, user_message: str, task_id: str = "") -> RuntimeResult:
         usable_tools, skipped = resolve_agent_tools(agent.tools, self._mcp.known_aliases())
         for name, reason in skipped:
             logger.info("Agent '%s': tool '%s' not exposed (%s)", agent.name, name, reason)
@@ -119,12 +121,15 @@ class AgentRuntime:
                         }
                     )
                     continue
+                tool_arguments = call["function"].get("arguments") or ""
                 logger.debug(
                     "Agent '%s': calling tool '%s' with args %r",
                     agent.name,
                     tool_name,
-                    _truncate(call["function"].get("arguments") or ""),
+                    _truncate(tool_arguments),
                 )
+                if self._log_store is not None:
+                    self._log_store.record(task_id, agent.name, "tool_call", f"{tool_name}({tool_arguments})")
                 result_text, is_error = await self._execute_tool_call(call)
                 logger.info(
                     "Agent '%s': tool '%s' %s (%d chars)",
@@ -139,6 +144,13 @@ class AgentRuntime:
                     tool_name,
                     _truncate(result_text),
                 )
+                if self._log_store is not None:
+                    self._log_store.record(
+                        task_id,
+                        agent.name,
+                        "tool_result",
+                        f"Error: {result_text}" if is_error else result_text,
+                    )
                 messages.append(
                     {
                         "role": "tool",

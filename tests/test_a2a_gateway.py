@@ -5,6 +5,7 @@ from starlette.testclient import TestClient
 
 from agent_runtime.a2a_gateway import build_agent_app, build_gateway_app
 from agent_runtime.loader import AgentDefinition
+from agent_runtime.observability import LogStore
 from agent_runtime.runtime import RuntimeResult
 from agent_runtime.task_store import SQLiteTaskStore
 
@@ -14,7 +15,7 @@ class StubRuntime:
         self._text = text
         self.calls: list[tuple[AgentDefinition, str]] = []
 
-    async def run(self, agent, user_message):
+    async def run(self, agent, user_message, task_id=""):
         self.calls.append((agent, user_message))
         return RuntimeResult(text=self._text, tool_calls_made=0)
 
@@ -25,7 +26,7 @@ class RoutingStubRuntime:
     def __init__(self):
         self.calls: list[tuple[str, str]] = []
 
-    async def run(self, agent, user_message):
+    async def run(self, agent, user_message, task_id=""):
         self.calls.append((agent.name, user_message))
         return RuntimeResult(text=f"handled by {agent.name}", tool_calls_made=0)
 
@@ -121,7 +122,7 @@ def test_message_stream_pushes_working_then_artifact_then_completed_events():
 
 def test_message_stream_surfaces_a_failed_task_as_a_terminal_event():
     class FailingRuntime:
-        async def run(self, agent, user_message):
+        async def run(self, agent, user_message, task_id=""):
             raise RuntimeError("llama-server unreachable")
 
     client = make_client(FailingRuntime())
@@ -171,7 +172,7 @@ def test_rpc_endpoint_answers_a_bare_get_for_connector_reachability_probes():
 
 def test_agent_error_surfaces_as_a_failed_task():
     class FailingRuntime:
-        async def run(self, agent, user_message):
+        async def run(self, agent, user_message, task_id=""):
             raise RuntimeError("llama-server unreachable")
 
     client = make_client(FailingRuntime())
@@ -182,6 +183,52 @@ def test_agent_error_surfaces_as_a_failed_task():
     task = response.json()["result"]
     assert task["status"]["state"] == "failed"
     assert "llama-server unreachable" in task["status"]["message"]["parts"][0]["text"]
+
+
+def test_log_store_records_request_and_response_when_provided(tmp_path: Path):
+    log_store = LogStore(tmp_path / "observability.db")
+    app = build_agent_app(
+        make_agent(), StubRuntime("found one bug"), public_url="http://testserver/", log_store=log_store
+    )
+    client = TestClient(app)
+
+    response = client.post("/", json=send_message_payload("review auth.py"))
+    task_id = response.json()["result"]["id"]
+
+    events = log_store.get_task_events(task_id)
+    event_types = [e["event_type"] for e in events]
+    assert event_types == ["request", "response"]
+    assert events[0]["content"] == "review auth.py"
+    assert events[1]["content"] == "found one bug"
+    assert all(e["agent_name"] == "code-reviewer" for e in events)
+    log_store.close()
+
+
+def test_log_store_records_error_on_a_failed_task(tmp_path: Path):
+    class FailingRuntime:
+        async def run(self, agent, user_message, task_id=""):
+            raise RuntimeError("llama-server unreachable")
+
+    log_store = LogStore(tmp_path / "observability.db")
+    app = build_agent_app(make_agent(), FailingRuntime(), public_url="http://testserver/", log_store=log_store)
+    client = TestClient(app)
+
+    response = client.post("/", json=send_message_payload("review auth.py"))
+    task_id = response.json()["result"]["id"]
+
+    events = log_store.get_task_events(task_id)
+    event_types = [e["event_type"] for e in events]
+    assert event_types == ["request", "error"]
+    assert "llama-server unreachable" in events[1]["content"]
+    log_store.close()
+
+
+def test_no_log_store_means_no_recording_and_no_crash():
+    client = make_client(StubRuntime("found one bug"))
+
+    response = client.post("/", json=send_message_payload("review auth.py"))
+
+    assert response.status_code == 200
 
 
 def test_gateway_rejects_an_empty_agent_list():

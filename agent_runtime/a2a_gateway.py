@@ -34,6 +34,7 @@ from a2a.utils.errors import ServerError
 from fastapi import FastAPI
 
 from .loader import AgentDefinition
+from .observability import LogStore
 from .runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
@@ -42,9 +43,10 @@ logger = logging.getLogger(__name__)
 class MarkdownAgentExecutor(AgentExecutor):
     """Bridges the A2A request lifecycle to a single AgentRuntime.run() call."""
 
-    def __init__(self, agent: AgentDefinition, runtime: AgentRuntime):
+    def __init__(self, agent: AgentDefinition, runtime: AgentRuntime, log_store: LogStore | None = None):
         self._agent = agent
         self._runtime = runtime
+        self._log_store = log_store
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task = context.current_task
@@ -63,10 +65,14 @@ class MarkdownAgentExecutor(AgentExecutor):
             len(user_text),
         )
         logger.debug("Agent '%s': request body (task_id=%s): %r", self._agent.name, task.id, user_text)
+        if self._log_store is not None:
+            self._log_store.record(task.id, self._agent.name, "request", user_text)
         try:
-            result = await self._runtime.run(self._agent, user_text)
+            result = await self._runtime.run(self._agent, user_text, task_id=task.id)
         except Exception as exc:  # noqa: BLE001 - surfaced to the A2A caller as a failed task
             logger.exception("Agent '%s': request failed (task_id=%s)", self._agent.name, task.id)
+            if self._log_store is not None:
+                self._log_store.record(task.id, self._agent.name, "error", str(exc))
             await updater.update_status(
                 TaskState.failed,
                 message=new_agent_text_message(
@@ -83,6 +89,8 @@ class MarkdownAgentExecutor(AgentExecutor):
             len(result.text),
         )
         logger.debug("Agent '%s': response body (task_id=%s): %r", self._agent.name, task.id, result.text)
+        if self._log_store is not None:
+            self._log_store.record(task.id, self._agent.name, "response", result.text)
         await updater.add_artifact(
             [Part(root=TextPart(text=result.text))],
             name=f"{self._agent.name}-result",
@@ -134,7 +142,11 @@ def build_agent_card(agent: AgentDefinition, public_url: str) -> AgentCard:
 
 
 def build_agent_app(
-    agent: AgentDefinition, runtime: AgentRuntime, public_url: str, task_store: TaskStore | None = None
+    agent: AgentDefinition,
+    runtime: AgentRuntime,
+    public_url: str,
+    task_store: TaskStore | None = None,
+    log_store: LogStore | None = None,
 ) -> FastAPI:
     """Builds a standalone A2A app for a single agent, reachable at public_url.
 
@@ -143,9 +155,10 @@ def build_agent_app(
     pass a `SQLiteTaskStore`. Each agent gets its own `DefaultRequestHandler`
     but the same `task_store` instance is safe to share across agents: task
     ids are SDK-generated UUIDs, so collisions across agents aren't a concern.
+    `log_store` is optional and purely additive (see `MarkdownAgentExecutor`).
     """
     agent_card = build_agent_card(agent, public_url)
-    executor = MarkdownAgentExecutor(agent, runtime)
+    executor = MarkdownAgentExecutor(agent, runtime, log_store=log_store)
     request_handler = DefaultRequestHandler(agent_executor=executor, task_store=task_store or InMemoryTaskStore())
     application = A2AFastAPIApplication(agent_card=agent_card, http_handler=request_handler)
     app = application.build()
@@ -172,14 +185,15 @@ def build_gateway_app(
     runtime: AgentRuntime,
     gateway_base_url: str,
     task_store: TaskStore | None = None,
+    log_store: LogStore | None = None,
 ) -> FastAPI:
     """Builds one FastAPI app hosting every agent, each under its own /agents/<name>/ sub-path.
 
     Each agent gets a fully independent Agent Card and RPC endpoint, mounted
     as its own A2A sub-application, so external callers (e.g. an OutSystems
     ODC external agent connector) address one agent per sub-path while
-    operators only run and expose a single process/port. `task_store` is
-    shared across every mounted agent (see `build_agent_app`).
+    operators only run and expose a single process/port. `task_store` and
+    `log_store` are both shared across every mounted agent (see `build_agent_app`).
     """
     if not agents:
         raise ValueError("No agents to serve: agents_dir contains no matching .md files")
@@ -189,7 +203,7 @@ def build_gateway_app(
 
     for agent in agents:
         agent_url = _agent_base_url(gateway_base_url, agent.name)
-        sub_app = build_agent_app(agent, runtime, agent_url, task_store=task_store)
+        sub_app = build_agent_app(agent, runtime, agent_url, task_store=task_store, log_store=log_store)
         gateway.mount(f"/agents/{agent.name}", sub_app)
         directory.append(
             {

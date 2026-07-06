@@ -135,6 +135,24 @@ curl -X POST http://localhost:9000/agents/code-reviewer/ -H "Content-Type: appli
 
 Run the test suite with `pytest`.
 
+## Local UI
+
+A separate, local-only admin UI for managing agents, MCP servers, and viewing activity logs:
+
+```bash
+./scripts/run_ui.sh       # or .\scripts\run_ui.ps1 on Windows
+```
+
+Open `http://127.0.0.1:9001/` (port from `AGENT_RUNTIME_UI_PORT`, default `9001`). Three tabs:
+
+- **Agents** — list, create, edit, and delete `agents/*.md` files directly. No database; every save writes the markdown file straight to `AGENT_RUNTIME_AGENTS_DIR`.
+- **MCP Servers** — same CRUD, backed by `config/mcp_servers.json`. Edits preserve `_comment*` documentation keys and the literal `{WORKING_DIR}` placeholder text verbatim (it never resolves the placeholder to a real path, unlike the gateway's own config loader — resolving it here would permanently bake a host-specific path into the file). Env values (which can hold secrets, e.g. an `ACCESSKEY`) are shown masked on the list page with a per-value "Show" toggle.
+- **Logs** — a read-only, filterable view (by agent and time range) over every A2A request/response and tool call, in full and unredacted, backed by `AGENT_RUNTIME_OBSERVABILITY_DB` (default `state/observability.db`; set to an empty value to disable logging).
+
+**This UI must never be exposed beyond localhost.** It runs as a completely separate process from the gateway, on its own port, hardcoded to bind `127.0.0.1` only — this is deliberate and is not configurable via `AGENT_RUNTIME_HOST` (the gateway's bind-address variable) or any other env var, because the UI can display a live plaintext secret from `mcp_servers.json` and the full unredacted content of every logged agent interaction. Never point an ngrok/Cloudflare Tunnel or any reverse proxy at the UI's port; only ever tunnel the gateway's port.
+
+Editing an agent or an MCP server writes the file immediately, but the running gateway process only reads `agents/*.md` and `mcp_servers.json` once, at its own startup — restart the gateway (`run_gateway.ps1`/`.sh`, or the whole `run_all.ps1` stack) to pick up any change made through the UI.
+
 ## Adding your own agents
 
 Drop a `.md` file in `agents/`, named `<agent-name>.md`, in the same format Claude Code/Cowork subagents already use:
@@ -229,4 +247,6 @@ Notes:
 - The filesystem MCP server is scoped to `AGENT_RUNTIME_WORKING_DIR` (via the `{WORKING_DIR}` placeholder in `mcp_servers.json`) — the sandbox boundary for `Read`/`Write`/`Edit`/`Glob`. This is enforced, not just advisory: the gateway refuses to start (`SystemExit`) if `AGENT_RUNTIME_WORKING_DIR` overlaps `config/`, which holds `.env` and `mcp_servers.json`. Never point it at the repo root.
 - MCP tool calls are bounded by `AGENT_RUNTIME_MCP_TIMEOUT` — a hung or slow MCP server subprocess surfaces as a normal tool error instead of stalling the shared connection pool (and therefore every agent) indefinitely.
 - `AGENT_RUNTIME_TASK_STORE_PATH` (default `state/tasks.db`) persists full task content — user messages, agent responses, artifacts — the same category of sensitive data as `AGENT_RUNTIME_LOG_LEVEL=DEBUG` logs. Keep it untracked (already gitignored via `state/`) and access-controlled like `config/.env`.
+- `AGENT_RUNTIME_OBSERVABILITY_DB` (default `state/observability.db`) backs the local UI's Logs tab and stores full, unredacted request/response/tool-call content by design — deliberately different from the INFO/DEBUG split above, made only for this store, only readable through the localhost-bound UI. Treat it exactly like `config/.env`: never commit it (already gitignored via `state/`), never ship it off this machine.
 - There is currently no authentication on the A2A endpoint itself; put it behind network-level access control (VPN, firewall rules, reverse-proxy auth) before exposing it beyond a trusted network, especially once reachable from ODC.
+- The local UI (`run_ui.ps1`/`.sh`) binds `127.0.0.1` only, hardcoded — never tunnel or reverse-proxy its port. See "Local UI" above.

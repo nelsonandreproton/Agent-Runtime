@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}MCP Servers{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1>MCP Servers</h1>
+  <a class="btn btn-primary" href="/ui/mcp-servers/new">New MCP Server</a>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Command</th>
+      <th>Env</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for server in servers %}
+    <tr>
+      <td>{{ server.name }}</td>
+      <td><code>{{ server.command }}</code></td>
+      <td>
+        {% for key, value in (server.env or {}).items() %}
+        <div class="kv-row">
+          <span>{{ key }}:</span>
+          <span class="masked-value" id="env-{{ loop.index0 }}-{{ server.name }}" data-masked="true" data-real="{{ value }}">********</span>
+          <button type="button" class="btn" data-target="env-{{ loop.index0 }}-{{ server.name }}" onclick="toggleMask(this)">Show</button>
+        </div>
+        {% endfor %}
+      </td>
+      <td class="actions">
+        <a class="btn" href="/ui/mcp-servers/{{ server.name }}/edit">Edit</a>
+        <form method="post" action="/ui/mcp-servers/{{ server.name }}/delete" style="display:inline"
+              data-confirm-message="Delete MCP server {{ server.name }}?"
+              onsubmit="return confirmDeleteForm(this)">
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

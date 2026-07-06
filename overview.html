@@ -129,7 +129,39 @@
   </section>
 
   <section>
-    <h2>4. Configuration</h2>
+    <h2>4. Local admin UI (new)</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Three tabs, no database</h3>
+        <p style="color:var(--muted);font-size:0.9rem;margin-bottom:12px;">
+          A separate process (<code>agent_runtime/ui_cli.py</code>, <code>scripts/run_ui.ps1</code> /
+          <code>.sh</code>) serves a server-rendered admin UI: <strong>Agents</strong> (CRUD on
+          <code>agents/*.md</code> directly on disk), <strong>MCP Servers</strong> (CRUD on
+          <code>mcp_servers.json</code>, preserving <code>{WORKING_DIR}</code> and comment keys
+          verbatim), and <strong>Logs</strong> (filterable, full-content view over every A2A
+          request/response and tool call). Edits require a gateway restart to take effect.
+        </p>
+        <div>
+          <span class="tag">FastAPI + Jinja2</span><span class="tag">No SPA build step</span>
+          <span class="tag">SQLite log store</span>
+        </div>
+      </div>
+      <div class="card note">
+        <h3>Localhost-only by design</h3>
+        <p style="color:var(--muted);font-size:0.87rem;">
+          Binds <code>127.0.0.1</code> only, hardcoded — never configurable via
+          <code>AGENT_RUNTIME_HOST</code> or any env var, and never mounted on the
+          gateway app. It can display a live plaintext secret from
+          <code>mcp_servers.json</code> and the full unredacted content of every
+          logged agent interaction, so it must never sit behind an ngrok/Cloudflare
+          tunnel — only the gateway's port is ever tunneled.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>5. Configuration</h2>
     <div class="card">
       <div class="param-grid">
         <span class="label">AGENT_RUNTIME_AGENTS_DIR</span><span class="val">Directory of agent .md files (default: agents)</span>
@@ -143,7 +175,7 @@
   </section>
 
   <section>
-    <h2>5. OutSystems ODC integration — confirmed working, two gotchas</h2>
+    <h2>6. OutSystems ODC integration — confirmed working, two gotchas</h2>
     <div class="grid-2">
       <div class="card note">
         <h3>AGENT_RUNTIME_PUBLIC_URL must be externally reachable</h3>
@@ -169,7 +201,7 @@
   </section>
 
   <section>
-    <h2>6. Status</h2>
+    <h2>7. Status</h2>
     <div class="card">
       <p style="color:var(--muted);font-size:0.9rem;">
         Validated end-to-end against a real OutSystems ODC chat agent: ODC fetched an
@@ -177,9 +209,11 @@
         runtime ran it through the local LLM, and the structured summary rendered back
         in ODC's chat UI. Seven example agents ship in <code>agents/</code>, several
         shaped around ODC/Salesforce call patterns. Every request/response and tool
-        call is now logged at INFO level. Not yet built: additional MCP servers beyond
-        filesystem (Tavily, Git, SQLite/Postgres), streaming responses, and
-        authentication on the A2A endpoint itself.
+        call is now logged at INFO level, and — separately — full unredacted activity
+        can be persisted to a local SQLite store for the new local admin UI's Logs tab.
+        Not yet built: additional MCP servers beyond filesystem (Tavily, Git,
+        SQLite/Postgres), streaming responses, and authentication on the A2A endpoint
+        itself.
       </p>
     </div>
   </section>

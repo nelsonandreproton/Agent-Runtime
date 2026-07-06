@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Agent Runtime{% endblock %} — Agent Runtime UI</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">Agent Runtime</span>
+    <nav>
+      <a href="/ui/agents" class="{{ 'active' if active_tab == 'agents' else '' }}">Agents</a>
+      <a href="/ui/mcp-servers" class="{{ 'active' if active_tab == 'mcp-servers' else '' }}">MCP Servers</a>
+      <a href="/ui/logs" class="{{ 'active' if active_tab == 'logs' else '' }}">Logs</a>
+    </nav>
+  </header>
+
+  <main>
+    {% if restart_required %}
+    <div class="banner banner-warn">
+      Change saved to disk. Restart the gateway (<code>run_gateway.ps1</code> / <code>run_all.ps1</code>) for it to take effect.
+    </div>
+    {% endif %}
+    {% if error %}
+    <div class="banner banner-error">{{ error }}</div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

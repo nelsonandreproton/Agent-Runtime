@@ -98,6 +98,10 @@ class Settings:
     # task on process exit). None disables persistence (falls back to
     # InMemoryTaskStore) — useful for tests or a throwaway local run.
     task_store_path: Path | None
+    # SQLite file backing the observability event log (agent_runtime/observability.py):
+    # A2A requests/responses and tool calls, for later browsing/filtering by a
+    # separate UI. None disables logging entirely.
+    observability_db_path: Path | None
     gateway_host: str
     gateway_port: int
     public_url: str
@@ -134,6 +138,11 @@ class Settings:
                 None
                 if os.environ.get("AGENT_RUNTIME_TASK_STORE_PATH") == ""
                 else Path(os.environ.get("AGENT_RUNTIME_TASK_STORE_PATH", "state/tasks.db"))
+            ),
+            observability_db_path=(
+                None
+                if os.environ.get("AGENT_RUNTIME_OBSERVABILITY_DB") == ""
+                else Path(os.environ.get("AGENT_RUNTIME_OBSERVABILITY_DB", "state/observability.db"))
             ),
             gateway_host=host,
             gateway_port=port,
