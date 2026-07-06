@@ -1,12 +1,17 @@
-# Starts the full local stack in three separate windows: llama.cpp's local
-# LLM, the ngrok tunnel (static domain), and the A2A gateway — in that order,
-# waiting for each to be ready before starting the next.
+# Starts the full local stack as three tabs in one Windows Terminal window
+# (LLM, NGROK, GATEWAY) — llama.cpp's local LLM, the ngrok tunnel (static
+# domain), and the A2A gateway, in that order, waiting for each to be ready
+# before starting the next. Requires Windows Terminal (wt.exe) on PATH.
 #
 # Edit the constants below to match your setup (model, ngrok domain, llama.cpp
 # install path) before running.
 
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
+
+if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
+    throw "Windows Terminal (wt.exe) was not found on PATH. Install it from the Microsoft Store, or run llama.cpp/ngrok/the gateway manually per the README."
+}
 
 # --- Configuration -----------------------------------------------------
 
@@ -20,11 +25,9 @@ $GatewayPort = 9000
 
 # --- 1. llama.cpp local LLM ---------------------------------------------
 
-Write-Host "Starting llama.cpp (model: $LlamaModel)..."
-Start-Process powershell -ArgumentList @(
-    "-NoExit", "-Command",
-    "& `"$LlamaExe`" serve -hf $LlamaModel -ngl 99 --parallel 1 --ctx-size 32768 --jinja"
-)
+Write-Host "Opening LLM tab (model: $LlamaModel)..."
+$llamaCommand = "& `"$LlamaExe`" serve -hf $LlamaModel -ngl 99 --parallel 1 --ctx-size 32768 --jinja"
+wt.exe new-tab --title "LLM" powershell -NoExit -Command $llamaCommand
 
 Write-Host "Waiting for llama.cpp to become ready on http://${LlamaHost}:${LlamaPort}/health ..."
 $llamaReady = $false
@@ -41,18 +44,17 @@ for ($i = 0; $i -lt 120; $i++) {
     Start-Sleep -Seconds 2
 }
 if (-not $llamaReady) {
-    Write-Warning "llama.cpp did not report healthy within 4 minutes — continuing anyway. Check its window for errors (e.g. still downloading/loading a large model)."
+    Write-Warning "llama.cpp did not report healthy within 4 minutes — continuing anyway. Check the LLM tab for errors (e.g. still downloading/loading a large model)."
 } else {
     Write-Host "llama.cpp is ready."
 }
 
 # --- 2. ngrok tunnel (static domain) ------------------------------------
 
-Write-Host "Starting ngrok tunnel (https://$NgrokDomain -> localhost:$GatewayPort)..."
-Start-Process powershell -ArgumentList @(
-    "-NoExit", "-Command",
-    "ngrok http --url=$NgrokDomain $GatewayPort"
-)
+Write-Host "Opening NGROK tab (https://$NgrokDomain -> localhost:$GatewayPort)..."
+# -w 0 targets the most-recently-used wt window, so this lands as a new tab
+# in the same window the LLM tab opened above, instead of a second window.
+wt.exe -w 0 new-tab --title "NGROK" powershell -NoExit -Command "ngrok http --url=$NgrokDomain $GatewayPort"
 
 Write-Host "Waiting for ngrok's local API to confirm the tunnel is up..."
 $ngrokReady = $false
@@ -69,18 +71,16 @@ for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 1
 }
 if (-not $ngrokReady) {
-    Write-Warning "Could not confirm the ngrok tunnel is up within 30s — continuing anyway. Check its window."
+    Write-Warning "Could not confirm the ngrok tunnel is up within 30s — continuing anyway. Check the NGROK tab."
 } else {
     Write-Host "ngrok tunnel is up at https://$NgrokDomain"
 }
 
 # --- 3. A2A gateway ------------------------------------------------------
 
-Write-Host "Starting the A2A gateway..."
+Write-Host "Opening GATEWAY tab..."
 Write-Host "Reminder: config\.env's AGENT_RUNTIME_PUBLIC_URL must be https://$NgrokDomain/ — the Agent Card is only built once at startup, so a mismatch here means ODC's 'Test Connection' will fail even though 'Get Details' succeeds."
-Start-Process powershell -ArgumentList @(
-    "-NoExit", "-Command",
-    "Set-Location `"$PSScriptRoot`"; .\run_gateway.ps1"
-)
+$gatewayCommand = "Set-Location `"$PSScriptRoot`"; .\run_gateway.ps1"
+wt.exe -w 0 new-tab --title "GATEWAY" powershell -NoExit -Command $gatewayCommand
 
-Write-Host "All three processes started in separate windows. Close/Ctrl+C each window individually to stop it."
+Write-Host "All three processes started as tabs (LLM, NGROK, GATEWAY) in one Windows Terminal window. Close/Ctrl+C each tab individually to stop it."
