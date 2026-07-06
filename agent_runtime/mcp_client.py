@@ -148,7 +148,14 @@ class MCPToolsClient:
                 )
 
     async def close_all(self) -> None:
-        for conn in self._connections.values():
+        # anyio requires cancel scopes to exit in strict reverse-of-entry
+        # order within a task. connect_all() enters each connection's stdio
+        # transport sequentially in this same task, so closing in forward
+        # order tries to exit the first (outermost) scope while a later
+        # connection's (inner) scopes are still open — anyio raises
+        # "cancel scope that isn't the current task's current cancel scope".
+        # Closing last-connected-first restores correct LIFO order.
+        for conn in reversed(list(self._connections.values())):
             await conn.close()
 
     def known_aliases(self) -> list[str]:

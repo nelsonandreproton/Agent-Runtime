@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 
+import anyio
 import pytest
 
 from agent_runtime.config import MCPServerConfig
@@ -119,3 +121,40 @@ async def test_a_hung_server_does_not_block_calls_to_a_different_healthy_server(
 
     assert slow_result[1] is True
     assert fast_result == ("fast result", False)
+
+
+@contextlib.asynccontextmanager
+async def _anyio_task_group_scope():
+    """Stand-in for what mcp's stdio_client() actually does: enter an anyio
+    task group (a cancel scope) inside an AsyncExitStack. Reproduces the real
+    anyio ordering constraint without spawning a subprocess."""
+    async with anyio.create_task_group():
+        yield
+
+
+@pytest.mark.asyncio
+async def test_close_all_closes_multiple_real_connections_without_an_anyio_cancel_scope_error():
+    """Regression test for a real bug: connect_all() enters each connection's
+    stdio transport (an anyio cancel scope) sequentially in one task. anyio
+    requires cancel scopes to exit in strict reverse-of-entry order within a
+    task — closing forward-order tries to exit the first (outermost) scope
+    while a later connection's (inner) scope is still open, and anyio raises
+    "cancel scope that isn't the current task's current cancel scope". This
+    only surfaces with 2+ real (non-stubbed) connections open at once, which
+    the fully-stubbed tests elsewhere in this file can't catch — verified
+    exposed against a live two-MCP-server config (filesystem + swarmmcp)
+    before the fix in close_all() (reversed iteration order)."""
+    config_a = MCPServerConfig(name="server-a", command="irrelevant")
+    config_b = MCPServerConfig(name="server-b", command="irrelevant")
+    conn_a = MCPServerConnection(config_a)
+    conn_b = MCPServerConnection(config_b)
+
+    # Enter real anyio cancel scopes sequentially, same task, same order
+    # connect_all() would (via conn.connect() -> exit_stack.enter_async_context).
+    await conn_a._exit_stack.enter_async_context(_anyio_task_group_scope())
+    await conn_b._exit_stack.enter_async_context(_anyio_task_group_scope())
+
+    client = MCPToolsClient([config_a, config_b])
+    client._connections = {"server-a": conn_a, "server-b": conn_b}
+
+    await client.close_all()  # must not raise

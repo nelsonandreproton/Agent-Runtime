@@ -13,6 +13,19 @@
         "Edit": "edit_file",
         "Glob": "search_files"
       }
+    },
+    {
+      "name": "swarmmcp",
+      "_comment": "Example: a domain-specific MCP server with no filesystem access at all. Tool aliases don't have to be Claude Code tool names (Read/Write/...) — they're just the names an agent's frontmatter `tools:` field references, resolved 1:1 against whatever the server actually exposes. See https://github.com/nelsonandreproton/swarmmcp.",
+      "command": "python",
+      "args": ["/path/to/swarmmcp/server.py"],
+      "env": {
+        "ACCESSKEY": "<your API access key>"
+      },
+      "tool_aliases": {
+        "GetMyProfile": "get_my_profile",
+        "GetMyVacations": "get_my_vacations"
+      }
     }
   ]
 }
