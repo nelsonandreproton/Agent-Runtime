@@ -6,6 +6,7 @@ from starlette.testclient import TestClient
 from agent_runtime.a2a_gateway import build_agent_app, build_gateway_app
 from agent_runtime.loader import AgentDefinition
 from agent_runtime.runtime import RuntimeResult
+from agent_runtime.task_store import SQLiteTaskStore
 
 
 class StubRuntime:
@@ -71,6 +72,65 @@ def test_agent_card_is_published_at_the_well_known_path():
     assert card["name"] == "code-reviewer"
     assert card["url"] == "http://testserver/"
     assert card["skills"][0]["id"] == "code-reviewer"
+    assert card["capabilities"]["streaming"] is True
+
+
+def message_stream_payload(text: str) -> dict:
+    return {
+        "id": "1",
+        "jsonrpc": "2.0",
+        "method": "message/stream",
+        "params": {
+            "message": {
+                "kind": "message",
+                "messageId": "m1",
+                "role": "user",
+                "parts": [{"kind": "text", "text": text}],
+            }
+        },
+    }
+
+
+def read_sse_events(client, payload: dict) -> list[dict]:
+    import json
+
+    events = []
+    with client.stream("POST", "/", json=payload, headers={"Accept": "text/event-stream"}) as response:
+        assert response.status_code == 200
+        for line in response.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[len("data: ") :]))
+    return events
+
+
+def test_message_stream_pushes_working_then_artifact_then_completed_events():
+    client = make_client(StubRuntime(text="found one bug in auth.py"))
+
+    events = read_sse_events(client, message_stream_payload("review auth.py"))
+
+    kinds = [e["result"]["kind"] for e in events]
+    assert kinds == ["task", "status-update", "artifact-update", "status-update"]
+    assert events[1]["result"]["status"]["state"] == "working"
+    assert events[2]["result"]["artifact"]["parts"][0]["text"] == "found one bug in auth.py"
+    final_status = events[3]["result"]["status"]
+    assert final_status["state"] == "completed"
+    # same ODC-facing guarantee as the non-streaming path: the terminal event
+    # carries an inline Message, not just a bare artifact.
+    assert final_status["message"]["parts"][0]["text"] == "found one bug in auth.py"
+
+
+def test_message_stream_surfaces_a_failed_task_as_a_terminal_event():
+    class FailingRuntime:
+        async def run(self, agent, user_message):
+            raise RuntimeError("llama-server unreachable")
+
+    client = make_client(FailingRuntime())
+
+    events = read_sse_events(client, message_stream_payload("review auth.py"))
+
+    final_status = events[-1]["result"]["status"]
+    assert final_status["state"] == "failed"
+    assert "llama-server unreachable" in final_status["message"]["parts"][0]["text"]
 
 
 def test_message_send_runs_the_agent_and_returns_a_completed_task():
@@ -180,3 +240,72 @@ def test_gateway_routes_message_send_to_the_matching_agent():
     assert response_a.json()["result"]["artifacts"][0]["parts"][0]["text"] == "handled by agent-a"
     assert response_b.json()["result"]["artifacts"][0]["parts"][0]["text"] == "handled by agent-b"
     assert runtime.calls == [("agent-a", "hi a"), ("agent-b", "hi b")]
+
+
+def tasks_get_payload(task_id: str) -> dict:
+    return {"id": "2", "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": task_id}}
+
+
+def test_a_sqlite_task_store_is_actually_used_when_provided(tmp_path: Path):
+    """Proves the task_store parameter is wired through, not just accepted and ignored."""
+    task_store = SQLiteTaskStore(tmp_path / "tasks.db")
+    app = build_agent_app(make_agent(), StubRuntime("done"), public_url="http://testserver/", task_store=task_store)
+    client = TestClient(app)
+
+    send_response = client.post("/", json=send_message_payload("review auth.py"))
+    task_id = send_response.json()["result"]["id"]
+
+    get_response = client.post("/", json=tasks_get_payload(task_id))
+
+    assert get_response.json()["result"]["id"] == task_id
+    assert get_response.json()["result"]["status"]["state"] == "completed"
+    task_store.close()
+
+
+def test_a_task_persisted_to_sqlite_is_queryable_after_the_store_is_reopened(tmp_path: Path):
+    """The actual point of SQLiteTaskStore: a task must survive a process restart,
+    simulated here by closing the store and reopening it against the same file."""
+    db_path = tmp_path / "tasks.db"
+    task_store = SQLiteTaskStore(db_path)
+    app = build_agent_app(make_agent(), StubRuntime("done"), public_url="http://testserver/", task_store=task_store)
+    client = TestClient(app)
+    task_id = client.post("/", json=send_message_payload("review auth.py")).json()["result"]["id"]
+    task_store.close()
+
+    reopened_store = SQLiteTaskStore(db_path)
+    reopened_app = build_agent_app(
+        make_agent(), StubRuntime("done"), public_url="http://testserver/", task_store=reopened_store
+    )
+    reopened_client = TestClient(reopened_app)
+
+    get_response = reopened_client.post("/", json=tasks_get_payload(task_id))
+
+    assert get_response.json()["result"]["id"] == task_id
+    reopened_store.close()
+
+
+def test_gateway_shares_one_task_store_across_every_mounted_agent(tmp_path: Path):
+    """A same-agent get proves nothing about sharing — it would pass identically
+    if each agent got its own independent store. The real proof is a
+    *cross*-agent lookup: a task created via agent-a's endpoint must be
+    readable through agent-b's endpoint, which only holds if both sub-apps
+    were wired to the same underlying TaskStore instance."""
+    task_store = SQLiteTaskStore(tmp_path / "tasks.db")
+    runtime = RoutingStubRuntime()
+    app = build_gateway_app(
+        [make_agent("agent-a", "Agent A"), make_agent("agent-b", "Agent B")],
+        runtime,
+        gateway_base_url="http://testserver/",
+        task_store=task_store,
+    )
+    client = TestClient(app)
+
+    task_id_a = client.post("/agents/agent-a/", json=send_message_payload("hi a")).json()["result"]["id"]
+    task_id_b = client.post("/agents/agent-b/", json=send_message_payload("hi b")).json()["result"]["id"]
+
+    cross_get_a_via_b = client.post("/agents/agent-b/", json=tasks_get_payload(task_id_a))
+    cross_get_b_via_a = client.post("/agents/agent-a/", json=tasks_get_payload(task_id_b))
+
+    assert cross_get_a_via_b.json()["result"]["id"] == task_id_a
+    assert cross_get_b_via_a.json()["result"]["id"] == task_id_b
+    task_store.close()

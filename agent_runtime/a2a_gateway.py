@@ -19,7 +19,7 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps.jsonrpc.fastapi_app import A2AFastAPIApplication
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
+from a2a.server.tasks import InMemoryTaskStore, TaskStore, TaskUpdater
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
@@ -107,7 +107,19 @@ def build_agent_card(agent: AgentDefinition, public_url: str) -> AgentCard:
         description=agent.description,
         url=public_url,
         version="1.0.0",
-        capabilities=AgentCapabilities(streaming=False),
+        # MarkdownAgentExecutor.execute() already emits its events (new_task,
+        # working, artifact, completed) onto the shared EventQueue that
+        # a2a-sdk's DefaultRequestHandler.on_message_send_stream() forwards
+        # over SSE — no executor change needed to support message/stream.
+        # This is task-state-transition streaming, not LLM token streaming:
+        # AgentRuntime.run() still returns one full turn at a time (the
+        # tool-calling loop only produces user-facing text on its final
+        # iteration), so a streaming client sees the same handful of events
+        # a polling client would see via tasks/get, just pushed instead of
+        # pulled. OutSystems ODC — the primary caller today — renders only
+        # inline Messages and doesn't consume message/stream, so this has no
+        # effect on ODC; it's for any future client that does.
+        capabilities=AgentCapabilities(streaming=True),
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
         skills=[
@@ -121,11 +133,20 @@ def build_agent_card(agent: AgentDefinition, public_url: str) -> AgentCard:
     )
 
 
-def build_agent_app(agent: AgentDefinition, runtime: AgentRuntime, public_url: str) -> FastAPI:
-    """Builds a standalone A2A app for a single agent, reachable at public_url."""
+def build_agent_app(
+    agent: AgentDefinition, runtime: AgentRuntime, public_url: str, task_store: TaskStore | None = None
+) -> FastAPI:
+    """Builds a standalone A2A app for a single agent, reachable at public_url.
+
+    `task_store` defaults to an in-memory store (tasks lost on restart) when
+    not given — callers that want a task to survive a gateway restart should
+    pass a `SQLiteTaskStore`. Each agent gets its own `DefaultRequestHandler`
+    but the same `task_store` instance is safe to share across agents: task
+    ids are SDK-generated UUIDs, so collisions across agents aren't a concern.
+    """
     agent_card = build_agent_card(agent, public_url)
     executor = MarkdownAgentExecutor(agent, runtime)
-    request_handler = DefaultRequestHandler(agent_executor=executor, task_store=InMemoryTaskStore())
+    request_handler = DefaultRequestHandler(agent_executor=executor, task_store=task_store or InMemoryTaskStore())
     application = A2AFastAPIApplication(agent_card=agent_card, http_handler=request_handler)
     app = application.build()
 
@@ -146,13 +167,19 @@ def _agent_base_url(gateway_base_url: str, agent_name: str) -> str:
     return f"{gateway_base_url.rstrip('/')}/agents/{agent_name}/"
 
 
-def build_gateway_app(agents: list[AgentDefinition], runtime: AgentRuntime, gateway_base_url: str) -> FastAPI:
+def build_gateway_app(
+    agents: list[AgentDefinition],
+    runtime: AgentRuntime,
+    gateway_base_url: str,
+    task_store: TaskStore | None = None,
+) -> FastAPI:
     """Builds one FastAPI app hosting every agent, each under its own /agents/<name>/ sub-path.
 
     Each agent gets a fully independent Agent Card and RPC endpoint, mounted
     as its own A2A sub-application, so external callers (e.g. an OutSystems
     ODC external agent connector) address one agent per sub-path while
-    operators only run and expose a single process/port.
+    operators only run and expose a single process/port. `task_store` is
+    shared across every mounted agent (see `build_agent_app`).
     """
     if not agents:
         raise ValueError("No agents to serve: agents_dir contains no matching .md files")
@@ -162,7 +189,7 @@ def build_gateway_app(agents: list[AgentDefinition], runtime: AgentRuntime, gate
 
     for agent in agents:
         agent_url = _agent_base_url(gateway_base_url, agent.name)
-        sub_app = build_agent_app(agent, runtime, agent_url)
+        sub_app = build_agent_app(agent, runtime, agent_url, task_store=task_store)
         gateway.mount(f"/agents/{agent.name}", sub_app)
         directory.append(
             {

@@ -8,3 +8,4 @@ config/.env
 config/mcp_servers.json
 CLAUDE.md
 data/
+state/

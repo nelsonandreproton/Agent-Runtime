@@ -93,6 +93,11 @@ class Settings:
     # .env and mcp_servers.json — an agent must never be able to read those
     # off disk even though it can execute arbitrary Read/Glob calls.
     working_dir: Path
+    # SQLite file backing A2A task persistence, so an in-flight task survives
+    # a gateway restart (InMemoryTaskStore, the a2a-sdk default, loses every
+    # task on process exit). None disables persistence (falls back to
+    # InMemoryTaskStore) — useful for tests or a throwaway local run.
+    task_store_path: Path | None
     gateway_host: str
     gateway_port: int
     public_url: str
@@ -125,6 +130,11 @@ class Settings:
             llama_model=os.environ.get("AGENT_RUNTIME_LLAMA_MODEL", "local-model"),
             mcp_config_path=Path(mcp_config) if mcp_config else None,
             working_dir=working_dir,
+            task_store_path=(
+                None
+                if os.environ.get("AGENT_RUNTIME_TASK_STORE_PATH") == ""
+                else Path(os.environ.get("AGENT_RUNTIME_TASK_STORE_PATH", "state/tasks.db"))
+            ),
             gateway_host=host,
             gateway_port=port,
             public_url=os.environ.get("AGENT_RUNTIME_PUBLIC_URL", f"http://{host}:{port}/"),
