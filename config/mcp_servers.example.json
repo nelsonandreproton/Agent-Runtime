@@ -17,7 +17,8 @@
     {
       "name": "swarmmcp",
       "_comment": "Example: a domain-specific MCP server with no filesystem access at all. Tool aliases don't have to be Claude Code tool names (Read/Write/...) — they're just the names an agent's frontmatter `tools:` field references, resolved 1:1 against whatever the server actually exposes. See https://github.com/nelsonandreproton/swarmmcp.",
-      "command": "python",
+      "_comment_command": "Use the ABSOLUTE PATH to the Python interpreter that actually has this server's dependencies installed — never a bare 'python'. A bare command name resolves via PATH at spawn time, and this venv's own Scripts dir is typically ahead of any other Python on PATH, so 'python' can silently launch THIS project's venv interpreter (missing the other server's deps) instead of the one you meant. Symptom: the server process starts, then immediately dies with ModuleNotFoundError, surfacing here as a generic 'Connection closed' with no indication which interpreter actually ran.",
+      "command": "/path/to/the/correct/python.exe",
       "args": ["/path/to/swarmmcp/server.py"],
       "env": {
         "ACCESSKEY": "<your API access key>"
